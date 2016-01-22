@@ -121,7 +121,7 @@ makeWavFile :: WavFile -> [(FilePath,Handle)] -> IO WavFile
 makeWavFile wf newChFiles = do
     chsizes <- liftIO $ sequence $ map (hFileSize.snd) newChFiles
     let nchs  = numChannels $ fmtheader wf
-        newsz = foldl (+) 0 chsizes  --tamaño en bytes de los datos
+        newsz = foldl (+) 0 chsizes  --tamaño en bytes de los datos (puede haber cambiado con algún delay o echo).
         oldrh = riffheader wf
         oldfh = fmtheader wf
         olddh = dataheader wf
@@ -167,15 +167,6 @@ fromByteStringtoSample sz x = let xs' = BS.unpack x
 
 --reemplaza el AudioData del archivo original por el que se le pase.
 putAudioData :: WavFile -> AudioData -> WavFile
-putAudioData = undefined
-
-getAudioData :: WavFile -> AudioData
-getAudioData = dat . dataheader
---------------------------------
-
-{-
---reemplaza el AudioData del archivo original por el que se le pase.
-putAudioData :: WavFile -> AudioData -> WavFile
 putAudioData wf a = let bps   = bitsPerSample $ fmtheader wf
                         nchs  = numChannels $ fmtheader wf
                         newsz = clength (chData $ a!!0) * (div bps 8) * nchs  --tamaño en bytes de los datos (cantidad de samples * bytes per sample * cantidad de canales)
@@ -198,7 +189,7 @@ putAudioData wf a = let bps   = bitsPerSample $ fmtheader wf
 getAudioData :: WavFile -> AudioData
 getAudioData = dat . dataheader
 --------------------------------
--}
+
 
 {-
 Los efectos que usan valores absoluto no necesitan ni siquiera usar un sink aparte antes,
@@ -217,12 +208,12 @@ setVolMaxData limit cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
                          in setVolRelData (factor * 100) cs
                          
 getVolLimit :: WavFile -> Sample
-getVolLimit wf = round (2 ** ((fromIntegral $ bitsPerSample (fmtheader wf)) - 1) - 1)
+getVolLimit wf = shiftL 2 (bitsPerSample (fmtheader wf) - 2) - 1
 
 
 setVolMax2 :: WavFile -> IO WavFile
 setVolMax2 wf = do maxv' <- getMaxVolume2 wf
-                   let maxv = (fromIntegral $ maxv')::Double
+                   let maxv = (fromIntegral maxv')::Double
                        limit = getVolLimit wf
                        factor = ((fromIntegral limit)::Double) / maxv
                    getSamples wf $$ setVolRel2_ factor =$ putSamples wf
@@ -241,7 +232,7 @@ setVolRelData p cs = let factor = p / 100
 
 
 setVolRel2 :: Double -> WavFile -> IO WavFile
-setVolRel2 vol wf = getSamples wf $$ setVolRel2_ (vol/100) =$ putSamples wf
+setVolRel2 p wf = getSamples wf $$ setVolRel2_ (p/100) =$ putSamples wf
 
 setVolRel2_ :: Double -> Conduit [Sample] IO [Sample]
 setVolRel2_ factor = do
@@ -267,6 +258,23 @@ denoiseData p cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
                    in (parMap rseq) modCh cs
 
 
+noiseGate2 :: Double -> WavFile -> IO WavFile
+noiseGate2 p wf = do
+    maxv' <- getMaxVolume2 wf
+    let maxv = (fromIntegral maxv')::Double
+        factor = p / 100
+        limit = round $ factor * maxv
+    getSamples wf $$ noiseGate2_ limit =$ putSamples wf
+
+noiseGate2_ :: Sample -> Conduit [Sample] IO [Sample]
+noiseGate2_ limit = do
+    x <- await
+    case x of
+        Nothing -> return ()
+        Just samples -> do
+            yield $ map (\s -> if abs s<limit then 0 else s) samples
+            noiseGate2_ limit
+
 
 --hard clipping simétrico relativo a un porcentaje p del volumen máximo ("distortion").
 clipRel :: Double -> WavFile -> WavFile
@@ -277,6 +285,15 @@ clipRelData p cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
                        factor = p / 100
                        clipval = factor * maxv
                    in clipAbsData (round clipval) cs
+
+
+clipRel2 :: Double -> WavFile -> IO WavFile
+clipRel2 p wf = do
+    maxv' <- getMaxVolume2 wf
+    let maxv = (fromIntegral maxv')::Double
+        factor = p / 100
+        clipval = round $ factor * maxv
+    clipAbs2 clipval wf
 
 
 --hard clipping simétrico respecto a un valor absoluto v.
@@ -292,25 +309,24 @@ clipAbsData v cs = let lim = abs v
 
 
 clipAbs2 :: Sample -> WavFile -> IO WavFile
-clipAbs2 v wf = getSamples wf $$ clipAbsData2 v =$ putSamples wf
+clipAbs2 v wf = getSamples wf $$ clipAbs2_ v =$ putSamples wf
 
-clipAbsData2 :: Sample -> Conduit [Sample] IO [Sample]
-clipAbsData2 v = let lim = abs v
-                     cut :: Sample -> Sample
-                     cut s = if abs s < lim then s else signum s*lim
-                 in do
-                     mx <- await
-                     case mx of
-                        Nothing -> return ()
-                        Just samples -> do
-                            yield $ map cut samples
-                            clipAbsData2 v
+clipAbs2_ :: Sample -> Conduit [Sample] IO [Sample]
+clipAbs2_ v = let lim = abs v
+                  cut :: Sample -> Sample
+                  cut s = if abs s < lim then s else signum s*lim
+              in do
+                  mx <- await
+                  case mx of
+                     Nothing -> return ()
+                     Just samples -> do
+                         yield $ map cut samples
+                         clipAbs2_ v
 
 
 
 --soft clipping ("overdrive") simétrico respecto a un porcentaje p del volumen máximo, con porcentaje de sensitividad s (s=0 equivale a hard clipping, s=100 no produce cambios).
 softClipRel :: Double -> Double -> WavFile -> WavFile
-softClipRel _ 100 wf = wf
 softClipRel p s wf = putAudioData wf $ softClipRelData p s (getAudioData wf)
 
 softClipRelData :: Double -> Double -> AudioData -> AudioData
@@ -322,7 +338,6 @@ softClipRelData p s cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
 
 --soft clipping simétrico respecto a un valor absoluto v.
 softClipAbs :: Sample -> Double -> WavFile -> WavFile
-softClipAbs _ 100 wf = wf
 softClipAbs v s wf = putAudioData wf $ softClipAbsData v s (getAudioData wf)
 
 softClipAbsData :: Sample -> Double -> AudioData -> AudioData

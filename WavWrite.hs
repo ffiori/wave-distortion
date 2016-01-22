@@ -110,7 +110,7 @@ putBlock2 :: Handle -> Sink [BS.ByteString] IO ()
 putBlock2 handle = do
     mx <- await
     case mx of
-        Nothing -> liftIO $ (hClose>>hFlush) handle
+        Nothing -> liftIO $ (hFlush>>hClose) handle
         Just samples -> do 
             liftIO $ sequence $ map (BS.hPut handle) samples
             putBlock2 handle

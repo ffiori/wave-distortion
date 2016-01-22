@@ -79,14 +79,14 @@ optimizar (e1:(e2:es)) = case optimizarEfectos e1 e2 of
 applyEff :: String -> String -> [Efecto] -> IO ()
 applyEff i o es = do wf <- readWav i
                      putStrLn "Wav parseado."
-                     let f = foldr (.) id (map toFunc (optimizar $ reverse es)) --ver foldMap para esto. TODO
+                     let f = foldr (.) id (map toFunc (optimizar $ reverse es))
                      putStrLn "Función de efectos creada."
                      
-                     newwf <- clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
-                     x <- getMaxVolume2 newwf
-                     y <- getMaxVolume2 newwf
-                     putStrLn $ "max vol "++(show x)++" "++(show y)
+                     newwf' <- clipRel2 85 wf
+                     --newwf <- setVolRel2 400 newwf' --clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
+                     --x <- getMaxVolume2 wf
+                     --putStrLn $ "max vol "++(show x)
                      
-                     writeWav o (f newwf)
+                     writeWav o (f newwf')
                      putStrLn "Wav final escrito."
                      return ()
