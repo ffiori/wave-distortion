@@ -6,11 +6,6 @@ module Distort where
 import Control.Parallel.Strategies
 import WavTypes
 
--- fft
-import Data.List(foldl')
-import Data.Complex(Complex(..),magnitude,realPart,imagPart,cis)
--- ...
-
 import Data.Bits
 import Data.Word
 import Data.Conduit
@@ -18,9 +13,11 @@ import System.IO
 import Control.Monad.IO.Class (liftIO)
 import System.Directory (removeFile)
 import qualified Data.ByteString as BS
+import qualified Data.List as L
 
 --Misc-----------------------------
 
+--esto puede ser sink
 getMaxVolume :: AudioData -> Sample
 getMaxVolume cs = let getMaxw :: (WaveContainer container) => container Sample -> Sample
                       --getMaxw = cfoldl (\x y -> max (abs x) (abs y)) 0
@@ -30,6 +27,21 @@ getMaxVolume cs = let getMaxw :: (WaveContainer container) => container Sample -
                       maxvs = (parMap rseq) (\c -> getMaxw $ chData c) cs
                   in getMaxw maxvs
 
+
+getMaxVolume2 :: WavFile -> IO Sample
+getMaxVolume2 wf = getSamples wf $$ getMaxVolume2_ 0
+
+getMaxVolume2_ :: Sample -> Sink [Sample] IO Sample
+getMaxVolume2_ !m = do
+    x <- await
+    case x of
+        Nothing -> return m
+        Just samples -> let f !x !y = max (abs x) (abs y)
+                        in getMaxVolume2_ $ foldl f m samples 
+            
+                            
+                            
+--esto puede ser sink
 getAvgVolume :: AudioData -> Sample
 getAvgVolume cs = let getAvgw :: (WaveContainer container) => container Sample -> Sample
                       --getAvgw w = round $ (fromIntegral $ cfoldl (\x y -> (abs x) + (abs y)) 0 w) / (fromIntegral $ clength w)
@@ -41,6 +53,17 @@ getAvgVolume cs = let getAvgw :: (WaveContainer container) => container Sample -
                   in getAvgw avgvs
 
 
+getAvgVolume2 :: WavFile -> IO Sample
+getAvgVolume2 wf = getSamples wf $$ getAvgVolume2_ 0 0
+
+getAvgVolume2_ :: Integer -> Integer -> Sink [Sample] IO Sample
+getAvgVolume2_ !tot !cant = do
+    x <- await
+    case x of
+        Nothing -> return $ fromIntegral $ div tot cant
+        Just samples -> let f !x !y = (fromIntegral $ abs x) + (fromIntegral $ abs y)
+                        in getAvgVolume2_ (foldl f tot samples) (fromIntegral (length samples) + cant)
+
 
 --SOURCE
 --Obtiene un sample de cada canal.
@@ -49,11 +72,8 @@ getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
                     chFilesPaths = chFiles $ dataheader wf
                 in do chHandles <- liftIO $ sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths
                       res <- getSamples_ sampsz chHandles
-                      liftIO $ sequence $ map removeFile chFilesPaths
                       return res
                       
-
-                
 getSamples_ :: Int -> [Handle] -> Source IO [Sample]
 getSamples_ sampsz chHandles = 
     let leer h = do 
@@ -76,13 +96,8 @@ getSamples_ sampsz chHandles =
 --SINK                                         
 --escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
 putSamples :: WavFile -> Sink [Sample] IO WavFile
-putSamples wf = let makeTemps :: Int -> IO [(FilePath,Handle)]
-                    makeTemps 0 = return []
-                    makeTemps n = do tmps <- makeTemps (n-1)
-                                     tmp <- openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")
-                                     return $ tmp : tmps
-                    nc = numChannels $ fmtheader wf
-                in do newChFiles <- liftIO $ makeTemps nc
+putSamples wf = let nc = numChannels $ fmtheader wf
+                in do newChFiles <- liftIO $ makeTemps nc nc
                       putSamples_ wf newChFiles
 
 putSamples_ :: WavFile -> [(FilePath,Handle)] -> Sink [Sample] IO WavFile
@@ -90,27 +105,10 @@ putSamples_ wf newChFiles = do
     mx <- await
     case mx of
         Nothing -> do liftIO $ sequence $ map (hFlush.snd) newChFiles
-                      chsizes <- liftIO $ sequence $ map (hFileSize.snd) newChFiles
-                      let nchs  = numChannels $ fmtheader wf
-                          newsz = foldl (+) 0 chsizes  --tamaño en bytes de los datos (cantidad de samples * bytes per sample * cantidad de canales)
-                          oldrh = riffheader wf
-                          oldfh = fmtheader wf
-                          olddh = dataheader wf
-                          newrh = HR { chunkID   = chunkID oldrh
-                                     , chunkSize = (fromIntegral newsz) + headerSz - (riffS!!0) - (riffS!!1)
-                                     , format    = format oldrh
-                                     }
-                          newdh = HD { chunk2ID = chunk2ID olddh
-                                     , chunk2Size = fromIntegral newsz
-                                     , dat = dat olddh
-                                     , chFiles = map fst newChFiles
-                                     }
-                          newWF = W { riffheader = newrh
-                                    , fmtheader  = oldfh
-                                    , dataheader = newdh
-                                    }
-                      --liftIO $ putStrLn $ "size viejo "++(show $ chunkSize oldrh)++". sz nuevo "++(show $ chunkSize newrh)
+                      newWF <- liftIO $ makeWavFile wf newChFiles
                       liftIO $ sequence $ map (hClose.snd) newChFiles
+                      let oldChPaths = chFiles $ dataheader wf
+                      liftIO $ sequence $ map removeFile oldChPaths
                       return newWF
         Just samples -> let sampsz = div (bitsPerSample $ fmtheader wf) 8
                             samples' = map (fromSampletoByteString sampsz) samples
@@ -118,6 +116,36 @@ putSamples_ wf newChFiles = do
                             liftIO $ sequence $ map (\(s,(_,h)) -> BS.hPut h s) (zip samples' newChFiles)
                             putSamples_ wf newChFiles
 
+
+makeWavFile :: WavFile -> [(FilePath,Handle)] -> IO WavFile
+makeWavFile wf newChFiles = do
+    chsizes <- liftIO $ sequence $ map (hFileSize.snd) newChFiles
+    let nchs  = numChannels $ fmtheader wf
+        newsz = foldl (+) 0 chsizes  --tamaño en bytes de los datos
+        oldrh = riffheader wf
+        oldfh = fmtheader wf
+        olddh = dataheader wf
+        newrh = HR { chunkID   = chunkID oldrh
+                   , chunkSize = (fromIntegral newsz) + headerSz - (riffS!!0) - (riffS!!1) --ver WavTypes.hs
+                   , format    = format oldrh
+                   }
+        newdh = HD { chunk2ID = chunk2ID olddh
+                   , chunk2Size = fromIntegral newsz
+                   , dat = dat olddh
+                   , chFiles = map fst newChFiles
+                   }
+        newWF = W { riffheader = newrh
+                  , fmtheader  = oldfh
+                  , dataheader = newdh
+                  }
+    return newWF
+
+
+makeTemps :: Int -> Int -> IO [(FilePath,Handle)]
+makeTemps 0 _  = return []
+makeTemps n nc = do tmps <- makeTemps (n-1) nc
+                    tmp <- openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")
+                    return $ tmp : tmps
 
 
 fromSampletoByteString :: Int -> Sample -> BS.ByteString
@@ -172,7 +200,13 @@ getAudioData = dat . dataheader
 --------------------------------
 -}
 
+{-
+Los efectos que usan valores absoluto no necesitan ni siquiera usar un sink aparte antes,
+les alcanza con hacer algo tipo GETSAMPLES $$ efecto_absoluto =$ PUTSAMPLES
+-}
 
+
+--esto TENDRÍA QUE SER ONDA x<-GETMAXVOLUME; GETSAMPLES $$ SETVOL x =$ PUTSAMPLES
 --sube el volumen al máximo admitido por el formato sin distorsionar.
 setVolMax :: WavFile -> WavFile
 setVolMax wf = putAudioData wf $ setVolMaxData (getVolLimit wf) (getAudioData wf)
@@ -186,6 +220,14 @@ getVolLimit :: WavFile -> Sample
 getVolLimit wf = round (2 ** ((fromIntegral $ bitsPerSample (fmtheader wf)) - 1) - 1)
 
 
+setVolMax2 :: WavFile -> IO WavFile
+setVolMax2 wf = do maxv' <- getMaxVolume2 wf
+                   let maxv = (fromIntegral $ maxv')::Double
+                       limit = getVolLimit wf
+                       factor = ((fromIntegral limit)::Double) / maxv
+                   getSamples wf $$ setVolRel2_ factor =$ putSamples wf
+
+
 --control de volumen relativo a un porcentaje p del volumen máximo. VER QUE EL VALOR NO SE PASE DEL MÁXIMO ADMITIDO POR EL BPS! TODO
 setVolRel :: Double -> WavFile -> WavFile
 setVolRel p wf = putAudioData wf $ setVolRelData p (getAudioData wf)
@@ -196,6 +238,19 @@ setVolRelData p cs = let factor = p / 100
                          modWave = cmap (\x -> round $ ((fromIntegral x)::Double) * factor)
                          modCh = (\c -> Channel { chID = chID c, chData = modWave (chData c) })
                      in (parMap rseq) modCh cs
+
+
+setVolRel2 :: Double -> WavFile -> IO WavFile
+setVolRel2 vol wf = getSamples wf $$ setVolRel2_ (vol/100) =$ putSamples wf
+
+setVolRel2_ :: Double -> Conduit [Sample] IO [Sample]
+setVolRel2_ factor = do
+    x <- await
+    case x of
+        Nothing -> return ()
+        Just samples -> do
+            yield $ map (\x -> round $ ((fromIntegral x)::Double) * factor) samples
+            setVolRel2_ factor
 
 
 --noise gate relativo a un porcentaje p del volumen máximo.
@@ -234,6 +289,23 @@ clipAbsData v cs = let lim = abs v
                        cut = (\s -> if abs s < lim then s
                                                    else signum s*lim)
                    in (parMap rseq) (\c->Channel { chID = chID c, chData = cmap cut (chData c) }) cs
+
+
+clipAbs2 :: Sample -> WavFile -> IO WavFile
+clipAbs2 v wf = getSamples wf $$ clipAbsData2 v =$ putSamples wf
+
+clipAbsData2 :: Sample -> Conduit [Sample] IO [Sample]
+clipAbsData2 v = let lim = abs v
+                     cut :: Sample -> Sample
+                     cut s = if abs s < lim then s else signum s*lim
+                 in do
+                     mx <- await
+                     case mx of
+                        Nothing -> return ()
+                        Just samples -> do
+                            yield $ map cut samples
+                            clipAbsData2 v
+
 
 
 --soft clipping ("overdrive") simétrico respecto a un porcentaje p del volumen máximo, con porcentaje de sensitividad s (s=0 equivale a hard clipping, s=100 no produce cambios).
@@ -346,9 +418,12 @@ delayData d f p isEcho wf cs = let srate = fromIntegral $ sampleRate $ fmtheader
 
 
 
+{-
 
-
-
+-- fft
+import Data.List(foldl')
+import Data.Complex(Complex(..),magnitude,realPart,imagPart,cis)
+-- ...
 
 
 -- | /O(n^2)/. The Discrete Fourier Transform.
@@ -365,7 +440,7 @@ idft [] = []
 idft xs = let n = (fromIntegral . length) xs
               (t:ts) = dft xs
           in (t/n) : ((reverse . fmap (/n)) ts)
-
+-}
 {-
 fft :: [Complex Double] -> [Complex Double]
 fft [] = []

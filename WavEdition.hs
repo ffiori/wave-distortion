@@ -81,7 +81,12 @@ applyEff i o es = do wf <- readWav i
                      putStrLn "Wav parseado."
                      let f = foldr (.) id (map toFunc (optimizar $ reverse es)) --ver foldMap para esto. TODO
                      putStrLn "Función de efectos creada."
-                     newwf <- getSamples wf $$ putSamples wf
+                     
+                     newwf <- clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
+                     x <- getMaxVolume2 newwf
+                     y <- getMaxVolume2 newwf
+                     putStrLn $ "max vol "++(show x)++" "++(show y)
+                     
                      writeWav o (f newwf)
                      putStrLn "Wav final escrito."
                      return ()
