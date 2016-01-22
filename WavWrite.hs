@@ -12,7 +12,6 @@ import System.Endian    -- fue necesario instalarlo con cabal install cpu
 import System.IO
 import Control.Monad.IO.Class (liftIO)
 import Data.Conduit
-import Control.Monad (foldM)
 import System.Directory (removeFile)
 
 import WavTypes
@@ -111,8 +110,7 @@ putBlock2 :: Handle -> Sink [BS.ByteString] IO ()
 putBlock2 handle = do
     mx <- await
     case mx of
-        Nothing -> do liftIO $ putStrLn "sink: Nothing from upstream, exiting"
-                      liftIO $ (hClose>>hFlush) handle
+        Nothing -> liftIO $ (hClose>>hFlush) handle
         Just samples -> do 
             liftIO $ sequence $ map (BS.hPut handle) samples
             putBlock2 handle

@@ -85,7 +85,7 @@ parsehDATA h rh fh = do fields <- recursiveGet h dataS
                                           chFilesPaths <- parseData sz fh h
                                           return HD { chunk2ID   = id 
                                                      , chunk2Size = sz
-                                                     , dat        = [Channel {chID=0, chData=[]}] --chFilesPaths --TODO
+                                                     , dat        = [Channel {chID=0, chData=[]}]
                                                      , chFiles = chFilesPaths
                                                      }
 

@@ -58,14 +58,13 @@ class WaveContainer c where
     cempty :: c t
     cappend :: c t -> c t -> c t
     clength :: c t -> Int
-    ccons :: t -> c t -> c t
-    chead :: c t -> t
-    ctail :: c t -> c t
-    cisEmpty :: c t -> Bool
-    creplicate :: Int -> a -> c a
-    czipWith ::  (t -> u -> v) -> c t -> c u -> c v 
-    ctake :: Int -> c a -> c a
-    cdrop :: Int -> c a -> c a
+    ccons :: t -> c t -> c t --tremolo
+    chead :: c t -> t   --tremolo
+    ctail :: c t -> c t --tremolo
+    cisEmpty :: c t -> Bool --tremolo
+    creplicate :: Int -> a -> c a --delay
+    czipWith ::  (t -> u -> v) -> c t -> c u -> c v --delay
+
     
 type Container = []
 type Sample = Int
@@ -97,8 +96,7 @@ instance WaveContainer [] where
                     _  -> False
     creplicate = replicate
     czipWith = zipWith
-    ctake = take
-    cdrop = drop
+
                     
 instance WaveContainer S.Seq where
     cmap f = S.mapWithIndex (\_ -> f)
@@ -114,8 +112,7 @@ instance WaveContainer S.Seq where
     cisEmpty = S.null
     creplicate = S.replicate
     czipWith = S.zipWith
-    ctake = S.take
-    cdrop = S.drop
+
 {-    
 instance WaveContainer V.Vector where
     cmap = V.map

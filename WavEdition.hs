@@ -6,7 +6,7 @@ import WavWrite
 import Distort
 
 import Control.Monad.State
-
+import Data.Conduit
 
 data Efecto = SetVolMax
              | SetVolRel Double
@@ -81,6 +81,7 @@ applyEff i o es = do wf <- readWav i
                      putStrLn "Wav parseado."
                      let f = foldr (.) id (map toFunc (optimizar $ reverse es)) --ver foldMap para esto. TODO
                      putStrLn "Función de efectos creada."
-                     writeWav o (f wf)
+                     newwf <- getSamples wf $$ putSamples wf
+                     writeWav o (f newwf)
                      putStrLn "Wav final escrito."
                      return ()

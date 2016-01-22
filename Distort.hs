@@ -11,6 +11,14 @@ import Data.List(foldl')
 import Data.Complex(Complex(..),magnitude,realPart,imagPart,cis)
 -- ...
 
+import Data.Bits
+import Data.Word
+import Data.Conduit
+import System.IO
+import Control.Monad.IO.Class (liftIO)
+import System.Directory (removeFile)
+import qualified Data.ByteString as BS
+
 --Misc-----------------------------
 
 getMaxVolume :: AudioData -> Sample
@@ -32,6 +40,112 @@ getAvgVolume cs = let getAvgw :: (WaveContainer container) => container Sample -
                       avgvs = (parMap rseq) (\c -> getAvgw $ chData c) cs
                   in getAvgw avgvs
 
+
+
+--SOURCE
+--Obtiene un sample de cada canal.
+getSamples :: WavFile -> Source IO [Sample]
+getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
+                    chFilesPaths = chFiles $ dataheader wf
+                in do chHandles <- liftIO $ sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths
+                      res <- getSamples_ sampsz chHandles
+                      liftIO $ sequence $ map removeFile chFilesPaths
+                      return res
+                      
+
+                
+getSamples_ :: Int -> [Handle] -> Source IO [Sample]
+getSamples_ sampsz chHandles = 
+    let leer h = do 
+            eof <- liftIO $ hIsEOF h
+            if eof
+                then return Nothing
+                else do str <- BS.hGet h sampsz
+                        return $ Just str
+    in do
+        res <- liftIO $ sequence $ map leer chHandles
+        let noNothing _ Nothing = False
+            noNothing False _ = False
+            noNothing _ _ = True
+            check = foldl noNothing True res
+        if check then do yield $ map (\x-> case x of Just xx -> fromByteStringtoSample sampsz xx) res
+                         getSamples_ sampsz chHandles
+                 else do liftIO $ sequence $ map hClose chHandles
+                         return ()
+
+--SINK                                         
+--escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
+putSamples :: WavFile -> Sink [Sample] IO WavFile
+putSamples wf = let makeTemps :: Int -> IO [(FilePath,Handle)]
+                    makeTemps 0 = return []
+                    makeTemps n = do tmps <- makeTemps (n-1)
+                                     tmp <- openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")
+                                     return $ tmp : tmps
+                    nc = numChannels $ fmtheader wf
+                in do newChFiles <- liftIO $ makeTemps nc
+                      putSamples_ wf newChFiles
+
+putSamples_ :: WavFile -> [(FilePath,Handle)] -> Sink [Sample] IO WavFile
+putSamples_ wf newChFiles = do
+    mx <- await
+    case mx of
+        Nothing -> do liftIO $ sequence $ map (hFlush.snd) newChFiles
+                      chsizes <- liftIO $ sequence $ map (hFileSize.snd) newChFiles
+                      let nchs  = numChannels $ fmtheader wf
+                          newsz = foldl (+) 0 chsizes  --tamaño en bytes de los datos (cantidad de samples * bytes per sample * cantidad de canales)
+                          oldrh = riffheader wf
+                          oldfh = fmtheader wf
+                          olddh = dataheader wf
+                          newrh = HR { chunkID   = chunkID oldrh
+                                     , chunkSize = (fromIntegral newsz) + headerSz - (riffS!!0) - (riffS!!1)
+                                     , format    = format oldrh
+                                     }
+                          newdh = HD { chunk2ID = chunk2ID olddh
+                                     , chunk2Size = fromIntegral newsz
+                                     , dat = dat olddh
+                                     , chFiles = map fst newChFiles
+                                     }
+                          newWF = W { riffheader = newrh
+                                    , fmtheader  = oldfh
+                                    , dataheader = newdh
+                                    }
+                      --liftIO $ putStrLn $ "size viejo "++(show $ chunkSize oldrh)++". sz nuevo "++(show $ chunkSize newrh)
+                      liftIO $ sequence $ map (hClose.snd) newChFiles
+                      return newWF
+        Just samples -> let sampsz = div (bitsPerSample $ fmtheader wf) 8
+                            samples' = map (fromSampletoByteString sampsz) samples
+                        in do 
+                            liftIO $ sequence $ map (\(s,(_,h)) -> BS.hPut h s) (zip samples' newChFiles)
+                            putSamples_ wf newChFiles
+
+
+
+fromSampletoByteString :: Int -> Sample -> BS.ByteString
+fromSampletoByteString sz x =
+    let loop :: Int -> Sample -> [Word8] -> [Word8]
+        loop 0 x ws = ws
+        loop n x ws = loop (n-1) (shiftR x 8) (((fromIntegral x)::Word8):ws)
+    in BS.pack $ loop sz x []
+
+fromByteStringtoSample :: Int->BS.ByteString->Sample
+fromByteStringtoSample sz x = let xs' = BS.unpack x
+                                  loop :: [Word8] -> Int -> Sample
+                                  loop [] n = n 
+                                  loop (x:xs) n = loop xs $ (shiftL n 8) .|. ((fromIntegral x) .&. 255) --hago & 255 para que me deje solamente los últimos 8 bits (si x es negativo me rellena con unos los primeros 24 bits)
+                                  gap = (4-sz)*8 --bits que sobran a la izquierda del número. Ojo: Se asume Sample=Int de 32 bits.
+                              in shiftR (shiftL (loop xs' 0) gap) gap --shifteo para mantener el signo
+
+
+
+--reemplaza el AudioData del archivo original por el que se le pase.
+putAudioData :: WavFile -> AudioData -> WavFile
+putAudioData = undefined
+
+getAudioData :: WavFile -> AudioData
+getAudioData = dat . dataheader
+--------------------------------
+
+{-
 --reemplaza el AudioData del archivo original por el que se le pase.
 putAudioData :: WavFile -> AudioData -> WavFile
 putAudioData wf a = let bps   = bitsPerSample $ fmtheader wf
@@ -56,6 +170,8 @@ putAudioData wf a = let bps   = bitsPerSample $ fmtheader wf
 getAudioData :: WavFile -> AudioData
 getAudioData = dat . dataheader
 --------------------------------
+-}
+
 
 --sube el volumen al máximo admitido por el formato sin distorsionar.
 setVolMax :: WavFile -> WavFile
