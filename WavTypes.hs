@@ -29,7 +29,7 @@ data WavFile = W { riffheader :: HRIFF
 -- Headers --
 
 data HRIFF = HR { chunkID :: String --big endian
-                , chunkSize :: Int
+                , chunkSize :: Int  --tamaño en bytes del archivo a partir de acá (o sea sin incluir los 4 bytes de chunkID ni los 4 bytes de chunkSize)
                 , format :: String  --big endian
                 }
 
@@ -45,7 +45,7 @@ data Hfmt = HF { subchunk1ID :: String  --big endian
 
 data Hdata = HD { chunk2ID :: String    --big endian
                 , chunk2Size :: Int
-                , dat :: AudioData --TODO acá puede ir el path al archivo temporal donde voy guardando los canales de audio, o puedo hacer un archivo por canal.
+                , dat :: AudioData
                 , chFiles :: [FilePath]
                 }
 
