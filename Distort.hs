@@ -155,9 +155,10 @@ fromSampletoByteString sz x =
         loop n x ws = loop (n-1) (shiftR x 8) (((fromIntegral x)::Word8):ws)
         maxlim = shiftL 1 (sz*8-1) - 1
         minlim = -maxlim - 1
-    in if x>maxlim then BS.pack $ reverse $ loop sz maxlim []
-       else if x<minlim then BS.pack $ reverse $ loop sz minlim []
-       else BS.pack $ reverse $ loop sz x []
+    in BS.pack $ reverse $ if x>maxlim then loop sz maxlim []
+                           else if x<minlim then loop sz minlim []
+                           else if sz==1 then loop sz (x+128) [] --si es 8 bits se almacena como unsigned!
+                           else loop sz x []
     
 
 fromByteStringtoSample :: Int->BS.ByteString->Sample
@@ -166,7 +167,8 @@ fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x
                                   loop [] n = n 
                                   loop (x:xs) n = loop xs $ (shiftL n 8) .|. ((fromIntegral x) .&. 255) --hago & 255 para que me deje solamente los últimos 8 bits (si x es negativo me rellena con unos los primeros 24 bits)
                                   gap = (4-sz)*8 --bits que sobran a la izquierda del número. Ojo: Se asume Sample=Int de 32 bits.
-                              in shiftR (shiftL (loop xs' 0) gap) gap --shifteo para mantener el signo
+                                  res = shiftR (shiftL (loop xs' 0) gap) gap --shifteo para mantener el signo
+                              in if sz==1 then (res-128) else res --si es 8 bits se almacena como unsigned!
 
 
 

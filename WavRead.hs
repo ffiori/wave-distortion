@@ -114,7 +114,7 @@ getSamples n sampsz hsource = do
             then error $ "Falta obtener "++(show n)++" samples! Como mínimo..."
             else do
                 samples <- liftIO $ sequence [ BS.hGet hsource sampsz | j<-[1..n] ] --sequence :: Monad m => [m a] -> m [a]
-                yield samples --TODO parsear bien los 8 bits! recordar que vienen como unsigned y yo trato todo como signed!!! se puede modificar acá y en wavwrite, o solamente en distort, para que si es 8 bits se lea y escriba como unsigned pero cuando lo convierto a sample lo paso a signed, en fromByteStringtoSample
+                yield samples
                 getSamples n sampsz hsource
 
 --SINK
@@ -145,7 +145,7 @@ recursiveGet h hS = do field <- BS.hGet h (head hS)
 --parsea un signed Int de 32bits en little-endian.
 getInt :: BS.ByteString -> Int
 getInt le = case BS.length le of
-                1 -> fromIntegral (runGet' (getWord8'::MonadaLectora Word8) le) - 128                    --el estándar dice que muestras de 8bits son unsigned. De todos modos las paso a signed con el -128.
+                1 -> fromIntegral (runGet' (getWord8'::MonadaLectora Word8) le) - 128                     --el estándar dice que muestras de 8bits son unsigned. De todos modos las paso a signed con el -128.
                 2 -> fromIntegral (fromIntegral (runGet' (getWord16le'::MonadaLectora Word16) le)::Int16) --primero parseo como Int16 y después como Int para preservar el signo.
                 3 -> fromIntegral $ runGet' (getWord24le'::MonadaLectora Word32) le                       --getWord24le devuelve signed.
                 4 -> fromIntegral $ runGet' (getWord32le'::MonadaLectora Word32) le
@@ -159,6 +159,6 @@ getWord24le :: Lector m => m Word32
 getWord24le = do x <- getWord8'
                  y <- getWord8'
                  z <- getWord8'
-                 let z' = shiftR (shiftL ((fromIntegral z)::Int32) 24) 8
+                 let z' = shiftR (shiftL ((fromIntegral z)::Int32) 24) 8 --lo corro 24 y vuelvo 8 para mantener el signo (en vez de correrlo 16 de una)
                      y' = shiftL ((fromIntegral y)::Int32) 8
                  return $ fromIntegral (z' .|. y') .|. (fromIntegral x)

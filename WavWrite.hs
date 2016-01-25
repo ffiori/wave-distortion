@@ -36,7 +36,6 @@ instance Escritor PutM where
     runPut' = BL.toStrict . runPut
 
 
-
 type MonadaEscritora = Put
 
 
