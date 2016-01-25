@@ -316,19 +316,19 @@ clipAbsData v cs = let lim = abs v
 
 
 clipAbs2 :: Sample -> WavFile -> IO WavFile
-clipAbs2 v wf = getSamples wf $$ clipAbs2_ v =$ putSamples wf
+clipAbs2 v wf = let lim = abs v
+                    f :: Sample -> Sample
+                    f s = if abs s < lim then s else signum s*lim
+                in getSamples wf $$ clipF f =$ putSamples wf
 
-clipAbs2_ :: Sample -> Conduit [Sample] IO [Sample]
-clipAbs2_ v = let lim = abs v
-                  cut :: Sample -> Sample
-                  cut s = if abs s < lim then s else signum s*lim
-              in do
-                  mx <- await
-                  case mx of
-                     Nothing -> return ()
-                     Just samples -> do
-                         yield $ map cut samples
-                         clipAbs2_ v
+clipF :: (Sample -> Sample) -> Conduit [Sample] IO [Sample]
+clipF f = do
+    mx <- await
+    case mx of
+        Nothing -> return ()
+        Just samples -> do 
+            yield $ map f samples
+            clipF f
 
 
 
@@ -343,6 +343,16 @@ softClipRelData p s cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
                          in softClipAbsData (round clipval) s cs
 
 
+softClipRel2 :: Double -> Double -> WavFile -> IO WavFile
+softClipRel2 p s wf = do
+    maxv' <- getMaxVolume2 wf
+    let maxv = (fromIntegral maxv')::Double
+        factor = p / 100
+        clipval = round $ factor * maxv
+    softClipAbs2 clipval s wf
+
+
+
 --soft clipping simétrico respecto a un valor absoluto v.
 softClipAbs :: Sample -> Double -> WavFile -> WavFile
 softClipAbs v s wf = putAudioData wf $ softClipAbsData v s (getAudioData wf)
@@ -355,6 +365,15 @@ softClipAbsData v s cs = let lim = abs v
                                                           else let soft = pct * (fromIntegral (abs s-lim))
                                                                in signum s * (lim + (round soft)) )
                           in (parMap rseq) (\c->Channel { chID = chID c, chData = cmap cut (chData c) }) cs
+
+
+softClipAbs2 :: Sample -> Double -> WavFile -> IO WavFile
+softClipAbs2 v s wf = let lim = abs v
+                          factor = s/100
+                          f :: Sample -> Sample
+                          f s = if abs s < lim then s else let soft = factor * (fromIntegral (abs s-lim))
+                                                           in signum s * (lim + (round soft))
+                      in getSamples wf $$ clipF f =$ putSamples wf
 
 
 --compresión, equilibra los volúmenes (sube los volúmenes "bajos" y baja los "altos")
