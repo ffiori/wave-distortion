@@ -82,12 +82,12 @@ parsehDATA h rh fh = do fields <- recursiveGet h dataS
                         if id/="data" then do descarto <- BS.hGet h sz
                                               parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
                                       else do
-                                          chFilesPaths <- parseData sz fh h
+                                          chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
                                           return HD { chunk2ID   = id 
-                                                     , chunk2Size = sz
-                                                     , dat        = [Channel {chID=0, chData=[]}]
-                                                     , chFiles = chFilesPaths
-                                                     }
+                                                    , chunk2Size = sz
+                                                    , dat        = [Channel {chID=0, chData=[]}]
+                                                    , chFiles = chFilePaths
+                                                    }
 
 
 -- Data --
@@ -102,7 +102,7 @@ parseData sz fh h = let sampsz = div (bitsPerSample fh) 8
                                          tmp <- openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")
                                          return $ tmp : tmps
                     in do chFiles <- makeTemps nc --armo los archivos de canales temporales.
-                          getSamples nc sampsz h $$ parsePerCh nblocks sampsz nc chFiles
+                          getSamples nc sampsz h $$ parsePerCh nblocks chFiles
                           return $ map fst chFiles
 
 --SOURCE
@@ -114,23 +114,23 @@ getSamples n sampsz hsource = do
             then error $ "Falta obtener "++(show n)++" samples! Como mínimo..."
             else do
                 samples <- liftIO $ sequence [ BS.hGet hsource sampsz | j<-[1..n] ] --sequence :: Monad m => [m a] -> m [a]
-                yield samples
+                yield samples --TODO parsear bien los 8 bits! recordar que vienen como unsigned y yo trato todo como signed!!! se puede modificar acá y en wavwrite, o solamente en distort, para que si es 8 bits se lea y escriba como unsigned pero cuando lo convierto a sample lo paso a signed, en fromByteStringtoSample
                 getSamples n sampsz hsource
 
 --SINK
---parsea tantas muestras como canales hay por vez, nblocks veces.
-parsePerCh :: Int -> Int -> Int -> [(FilePath,Handle)] -> Sink [BS.ByteString] IO ()
-parsePerCh 0       _      _   chFiles = do liftIO $ sequence $ map (hFlush.snd>>hClose.snd) chFiles --cierro los handles y flusheo.
-                                           return ()
-parsePerCh nblocks sampsz len chFiles = do x <- await
-                                           case x of
-                                                Nothing -> error "No hay más samples!"
-                                                Just samples -> 
-                                                    if length chFiles == 0 
-                                                    then error "No hay canales!"
-                                                    else do
-                                                        liftIO $ sequence $ map (\((_,h),smpl) -> BS.hPut h smpl) (zip chFiles samples)
-                                                        parsePerCh (nblocks-1) sampsz len chFiles
+--escribe una muestra en cada canal (o sea un bloque de muestras), nblocks veces.
+parsePerCh :: Int -> [(FilePath,Handle)] -> Sink [BS.ByteString] IO ()
+parsePerCh 0       chFiles = do liftIO $ sequence $ map (hFlush.snd>>hClose.snd) chFiles --flusheo y cierro los handles.
+                                return ()
+parsePerCh nblocks chFiles = do x <- await
+                                case x of
+                                     Nothing -> error "No hay más samples!"
+                                     Just samples -> 
+                                         if length chFiles == 0 
+                                         then error "No hay canales!"
+                                         else do
+                                             liftIO $ sequence $ map (\((_,h),smpl) -> BS.hPut h smpl) (zip chFiles samples)
+                                             parsePerCh (nblocks-1) chFiles
 
 
 -- Utilidades --

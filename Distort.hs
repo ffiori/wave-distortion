@@ -153,10 +153,15 @@ fromSampletoByteString sz x =
     let loop :: Int -> Sample -> [Word8] -> [Word8]
         loop 0 x ws = ws
         loop n x ws = loop (n-1) (shiftR x 8) (((fromIntegral x)::Word8):ws)
-    in BS.pack $ loop sz x []
+        maxlim = shiftL 1 (sz*8-1) - 1
+        minlim = -maxlim - 1
+    in if x>maxlim then BS.pack $ reverse $ loop sz maxlim []
+       else if x<minlim then BS.pack $ reverse $ loop sz minlim []
+       else BS.pack $ reverse $ loop sz x []
+    
 
 fromByteStringtoSample :: Int->BS.ByteString->Sample
-fromByteStringtoSample sz x = let xs' = BS.unpack x
+fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x
                                   loop :: [Word8] -> Int -> Sample
                                   loop [] n = n 
                                   loop (x:xs) n = loop xs $ (shiftL n 8) .|. ((fromIntegral x) .&. 255) --hago & 255 para que me deje solamente los últimos 8 bits (si x es negativo me rellena con unos los primeros 24 bits)
@@ -208,7 +213,7 @@ setVolMaxData limit cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
                          in setVolRelData (factor * 100) cs
                          
 getVolLimit :: WavFile -> Sample
-getVolLimit wf = shiftL 2 (bitsPerSample (fmtheader wf) - 2) - 1
+getVolLimit wf = shiftL 1 (bitsPerSample (fmtheader wf) - 1) - 1
 
 
 setVolMax2 :: WavFile -> IO WavFile
@@ -236,8 +241,8 @@ setVolRel2 p wf = getSamples wf $$ setVolRel2_ (p/100) =$ putSamples wf
 
 setVolRel2_ :: Double -> Conduit [Sample] IO [Sample]
 setVolRel2_ factor = do
-    x <- await
-    case x of
+    mx <- await
+    case mx of
         Nothing -> return ()
         Just samples -> do
             yield $ map (\x -> round $ ((fromIntegral x)::Double) * factor) samples

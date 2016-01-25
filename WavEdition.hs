@@ -82,11 +82,11 @@ applyEff i o es = do wf <- readWav i
                      let f = foldr (.) id (map toFunc (optimizar $ reverse es))
                      putStrLn "Función de efectos creada."
                      
-                     newwf' <- clipRel2 85 wf
-                     --newwf <- setVolRel2 400 newwf' --clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
-                     --x <- getMaxVolume2 wf
-                     --putStrLn $ "max vol "++(show x)
+                     newwf' <- clipRel2 15 wf
+                     newwf <- setVolMax2 newwf' --clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
+                     x <- getMaxVolume2 newwf
+                     putStrLn $ "max vol "++(show x)++" bps "++ (show $ bitsPerSample $ fmtheader wf)
                      
-                     writeWav o (f newwf')
+                     writeWav o (f newwf)
                      putStrLn "Wav final escrito."
                      return ()
