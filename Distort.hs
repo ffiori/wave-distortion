@@ -187,6 +187,7 @@ putAudioData wf a = let bps   = bitsPerSample $ fmtheader wf
                         newdh = HD { chunk2ID = chunk2ID olddh
                                    , chunk2Size = newsz
                                    , dat = a --acá pongo el audiodata
+                                   , chFiles = []
                                    }
                     in W { riffheader = newrh
                          , fmtheader  = oldfh
@@ -226,7 +227,7 @@ setVolMax2 wf = do maxv' <- getMaxVolume2 wf
                    getSamples wf $$ setVolRel2_ factor =$ putSamples wf
 
 
---control de volumen relativo a un porcentaje p del volumen máximo. VER QUE EL VALOR NO SE PASE DEL MÁXIMO ADMITIDO POR EL BPS! TODO
+--control de volumen relativo a un porcentaje p del volumen máximo. VER QUE EL VALOR NO SE PASE DEL MÁXIMO ADMITIDO POR EL BPS! ya se chequea em fromSampletoByteString
 setVolRel :: Double -> WavFile -> WavFile
 setVolRel p wf = putAudioData wf $ setVolRelData p (getAudioData wf)
 
@@ -319,16 +320,16 @@ clipAbs2 :: Sample -> WavFile -> IO WavFile
 clipAbs2 v wf = let lim = abs v
                     f :: Sample -> Sample
                     f s = if abs s < lim then s else signum s*lim
-                in getSamples wf $$ clipF f =$ putSamples wf
+                in getSamples wf $$ mapSamples f =$ putSamples wf
 
-clipF :: (Sample -> Sample) -> Conduit [Sample] IO [Sample]
-clipF f = do
+mapSamples :: (Sample -> Sample) -> Conduit [Sample] IO [Sample]
+mapSamples f = do
     mx <- await
     case mx of
         Nothing -> return ()
         Just samples -> do 
             yield $ map f samples
-            clipF f
+            mapSamples f
 
 
 
@@ -373,7 +374,7 @@ softClipAbs2 v s wf = let lim = abs v
                           f :: Sample -> Sample
                           f s = if abs s < lim then s else let soft = factor * (fromIntegral (abs s-lim))
                                                            in signum s * (lim + (round soft))
-                      in getSamples wf $$ clipF f =$ putSamples wf
+                      in getSamples wf $$ mapSamples f =$ putSamples wf
 
 
 --compresión, equilibra los volúmenes (sube los volúmenes "bajos" y baja los "altos")
@@ -387,6 +388,16 @@ compRelData p s cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
                          compval = factor * maxv
                      in compAbsData (round compval) s cs
 
+
+compRel2 :: Double -> Double -> WavFile -> IO WavFile
+compRel2 p s wf = do
+    maxv <- getMaxVolume2 wf
+    let factor = p/100
+        maxvd = (fromIntegral maxv)::Double
+        compval = round $ factor*maxvd
+    compAbs2 compval s wf
+
+
 -- compresión relativa al volumen promedio con una sensitividad s.
 compAvg :: Double -> WavFile -> WavFile
 compAvg s wf = putAudioData wf $ compAvgData s (getAudioData wf)
@@ -394,6 +405,12 @@ compAvg s wf = putAudioData wf $ compAvgData s (getAudioData wf)
 compAvgData :: Double -> AudioData -> AudioData
 compAvgData s cs = let avg = getAvgVolume cs
                    in compAbsData avg s cs
+
+
+compAvg2 :: Double -> WavFile -> IO WavFile
+compAvg2 s wf = do
+    avg <- getAvgVolume2 wf
+    compAbs2 avg s wf
 
 
 -- compresión respecto a un valor absoluto v con una sensitividad s.
@@ -407,6 +424,16 @@ compAbsData v s cs = let lim = abs v
                          f = \s -> signum s * ( abs s + round (fromIntegral (lim - abs s) * pct) )
                      in (parMap rseq) (\c->Channel { chID = chID c, chData = cmap f (chData c) }) cs
 
+
+
+compAbs2 :: Sample -> Double -> WavFile -> IO WavFile
+compAbs2 v s wf = getSamples wf $$ compAbs2_ (abs v) (s/100) =$ putSamples wf
+
+compAbs2_ :: Sample -> Double -> Conduit [Sample] IO [Sample]
+compAbs2_ lim factor = 
+    let f s = signum s * ( abs s + round (fromIntegral (lim - abs s) * factor) )
+    in mapSamples f
+                       
 
 
 -- tremolo, Speed (s, período de la onda en ms) and Depth (d, amplitud de la onda) control how fast and how much the signal varies.
@@ -434,6 +461,33 @@ tremoloCh :: WaveContainer container => [Double] -> container Sample -> containe
 tremoloCh (f:fs) ss = if cisEmpty ss then cempty
                                      else ccons (round (fromIntegral (chead ss) * f)) (tremoloCh fs (ctail ss))
 
+
+
+tremolo2 :: Double -> Double -> Double -> Bool -> WavFile -> IO WavFile
+tremolo2 s d t isPanning wf = let chFilePaths = chFiles $ dataheader wf
+                                  srate = fromIntegral $ sampleRate $ fmtheader $ wf
+                                  ms = 1000/srate --ms per sample
+                                  s' = s/ms       --cuántas samples necesito para hacer un período
+                                  pi = 3.1415926535897932384626433832795028841971693993751
+                                  factor = 2*pi/s'
+                                  factores = [ (d + (sin(i*factor)) * d) / 2 + t | i<-[0..] ]
+                                  nchs = fromIntegral $ numChannels $ fmtheader wf
+                                  factoresPorCh = if isPanning then [ drop (round $ s'*i/nchs) factores | i<-[0..nchs] ]
+                                                               else replicate (round nchs) factores
+                              in getSamples wf $$ tremolo2_ factoresPorCh =$ putSamples wf
+
+tremolo2_ :: [[Double]] -> Conduit [Sample] IO [Sample]
+tremolo2_ factoress = do
+    mx <- await
+    case mx of
+        Nothing -> return ()
+        Just samples -> 
+            let factores = map head factoress
+                fys = zip factores samples 
+                fun (f,s) = round $ (fromIntegral s) * f
+            in do
+                yield $ map fun fys
+                tremolo2_ $ map tail factoress
 
 -- delay, delay (ms), feedback (cantidad de veces que se repite), p (potencia, porcentaje)
 -- Todos los argumentos deben ser positivos. TODO
