@@ -105,7 +105,7 @@ putSamples_ wf newChFiles = do
     mx <- await
     case mx of
         Nothing -> do liftIO $ sequence $ map (hFlush.snd) newChFiles
-                      newWF <- liftIO $ makeWavFile wf newChFiles
+                      newWF <- liftIO $ updateWavFile wf newChFiles
                       liftIO $ sequence $ map (hClose.snd) newChFiles
                       let oldChPaths = chFiles $ dataheader wf
                       liftIO $ sequence $ map removeFile oldChPaths
@@ -117,8 +117,8 @@ putSamples_ wf newChFiles = do
                             putSamples_ wf newChFiles
 
 
-makeWavFile :: WavFile -> [(FilePath,Handle)] -> IO WavFile
-makeWavFile wf newChFiles = do
+updateWavFile :: WavFile -> [(FilePath,Handle)] -> IO WavFile
+updateWavFile wf newChFiles = do
     chsizes <- liftIO $ sequence $ map (hFileSize.snd) newChFiles
     let nchs  = numChannels $ fmtheader wf
         newsz = foldl (+) 0 chsizes  --tamaño en bytes de los datos (puede haber cambiado con algún delay o echo).
@@ -155,14 +155,14 @@ fromSampletoByteString sz x =
         loop n x ws = loop (n-1) (shiftR x 8) (((fromIntegral x)::Word8):ws)
         maxlim = shiftL 1 (sz*8-1) - 1
         minlim = -maxlim - 1
-    in BS.pack $ reverse $ if x>maxlim then loop sz maxlim []
+    in BS.pack $ reverse $ if x>maxlim then loop sz maxlim [] --reverse porque es little endian!
                            else if x<minlim then loop sz minlim []
                            else if sz==1 then loop sz (x+128) [] --si es 8 bits se almacena como unsigned!
                            else loop sz x []
     
 
 fromByteStringtoSample :: Int->BS.ByteString->Sample
-fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x
+fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x --reverse porque es little endian!
                                   loop :: [Word8] -> Int -> Sample
                                   loop [] n = n 
                                   loop (x:xs) n = loop xs $ (shiftL n 8) .|. ((fromIntegral x) .&. 255) --hago & 255 para que me deje solamente los últimos 8 bits (si x es negativo me rellena con unos los primeros 24 bits)
@@ -224,7 +224,7 @@ setVolMax2 wf = do maxv' <- getMaxVolume2 wf
                    let maxv = (fromIntegral maxv')::Double
                        limit = getVolLimit wf
                        factor = ((fromIntegral limit)::Double) / maxv
-                   getSamples wf $$ setVolRel2_ factor =$ putSamples wf
+                   setVolRel2 (factor*100) wf                    
 
 
 --control de volumen relativo a un porcentaje p del volumen máximo. VER QUE EL VALOR NO SE PASE DEL MÁXIMO ADMITIDO POR EL BPS! ya se chequea em fromSampletoByteString
@@ -240,16 +240,9 @@ setVolRelData p cs = let factor = p / 100
 
 
 setVolRel2 :: Double -> WavFile -> IO WavFile
-setVolRel2 p wf = getSamples wf $$ setVolRel2_ (p/100) =$ putSamples wf
+setVolRel2 p wf = let f s = round $ (fromIntegral s) * p/100
+                  in getSamples wf $$ mapSamples f =$ putSamples wf
 
-setVolRel2_ :: Double -> Conduit [Sample] IO [Sample]
-setVolRel2_ factor = do
-    mx <- await
-    case mx of
-        Nothing -> return ()
-        Just samples -> do
-            yield $ map (\x -> round $ ((fromIntegral x)::Double) * factor) samples
-            setVolRel2_ factor
 
 
 --noise gate relativo a un porcentaje p del volumen máximo.
@@ -272,16 +265,9 @@ noiseGate2 p wf = do
     let maxv = (fromIntegral maxv')::Double
         factor = p / 100
         limit = round $ factor * maxv
-    getSamples wf $$ noiseGate2_ limit =$ putSamples wf
+        f s = if abs s<limit then 0 else s
+    getSamples wf $$ mapSamples f =$ putSamples wf
 
-noiseGate2_ :: Sample -> Conduit [Sample] IO [Sample]
-noiseGate2_ limit = do
-    x <- await
-    case x of
-        Nothing -> return ()
-        Just samples -> do
-            yield $ map (\s -> if abs s<limit then 0 else s) samples
-            noiseGate2_ limit
 
 
 --hard clipping simétrico relativo a un porcentaje p del volumen máximo ("distortion").
@@ -321,6 +307,7 @@ clipAbs2 v wf = let lim = abs v
                     f :: Sample -> Sample
                     f s = if abs s < lim then s else signum s*lim
                 in getSamples wf $$ mapSamples f =$ putSamples wf
+
 
 mapSamples :: (Sample -> Sample) -> Conduit [Sample] IO [Sample]
 mapSamples f = do
@@ -427,13 +414,10 @@ compAbsData v s cs = let lim = abs v
 
 
 compAbs2 :: Sample -> Double -> WavFile -> IO WavFile
-compAbs2 v s wf = getSamples wf $$ compAbs2_ (abs v) (s/100) =$ putSamples wf
-
-compAbs2_ :: Sample -> Double -> Conduit [Sample] IO [Sample]
-compAbs2_ lim factor = 
-    let f s = signum s * ( abs s + round (fromIntegral (lim - abs s) * factor) )
-    in mapSamples f
-                       
+compAbs2 v s wf = let lim = abs v
+                      factor = s/100
+                      f s = signum s * ( abs s + round (fromIntegral (lim - abs s) * factor) )
+                  in getSamples wf $$ mapSamples f =$ putSamples wf
 
 
 -- tremolo, Speed (s, período de la onda en ms) and Depth (d, amplitud de la onda) control how fast and how much the signal varies.
@@ -470,10 +454,12 @@ tremolo2 s d t isPanning wf = let chFilePaths = chFiles $ dataheader wf
                                   s' = s/ms       --cuántas samples necesito para hacer un período
                                   pi = 3.1415926535897932384626433832795028841971693993751
                                   factor = 2*pi/s'
-                                  factores = [ (d + (sin(i*factor)) * d) / 2 + t | i<-[0..] ]
                                   nchs = fromIntegral $ numChannels $ fmtheader wf
-                                  factoresPorCh = if isPanning then [ drop (round $ s'*i/nchs) factores | i<-[0..nchs] ]
-                                                               else replicate (round nchs) factores
+                                  f :: Double -> Double -> Double
+                                  f nc i = let offset = s'*nc/nchs --para el panning. Si isPanning=False entonces offset=0, o sea que no depende del número del canal, para todos los canales es igual.
+                                           in (d + (sin((i+offset)*factor)) * d) / 2 + t
+                                  factoresPorCh = if isPanning then [ [f nc i | i<-[0..]] | nc<-[0..nchs-1] ]
+                                                               else [ [f 0  i | i<-[0..]] | nc<-[0..nchs-1] ]
                               in getSamples wf $$ tremolo2_ factoresPorCh =$ putSamples wf
 
 tremolo2_ :: [[Double]] -> Conduit [Sample] IO [Sample]
