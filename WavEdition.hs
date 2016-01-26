@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 module WavEdition where
 
 import WavTypes
@@ -7,6 +8,7 @@ import Distort
 
 import Control.Monad.State
 import Data.Conduit
+import Control.Exception.Base (evaluate)
 
 data Efecto = SetVolMax
              | SetVolRel Double
@@ -25,29 +27,29 @@ data Efecto = SetVolMax
 
 
 -- Convierte un elemento de la representación en deep embedding a la función correspondiente.
-toFunc :: Efecto -> WavFile -> WavFile
+toFunc :: Efecto -> WavFile -> IO WavFile
 
-toFunc SetVolMax = setVolMax
-toFunc (SetVolRel v) = setVolRel v
-toFunc (NoiseGate x) = noiseGate x
-toFunc (ClipRel p) = clipRel p
-toFunc (ClipAbs v) = clipAbs v
-toFunc (SoftClipRel p s) = softClipRel p s
-toFunc (SoftClipAbs v s) = softClipAbs v s
-toFunc (CompRel p s) = compRel p s
-toFunc (CompAvg s) = compAvg s
-toFunc (CompAbs v s) = compAbs v s
-toFunc (Tremolo s d t) = tremolo s d t False
-toFunc (Panning s d t) = tremolo s d t True
-toFunc (Delay d f p) = delay d f p False
-toFunc (Echo d f p) = delay d f p True
+toFunc SetVolMax = setVolMax2
+toFunc (SetVolRel v) = setVolRel2 v
+toFunc (NoiseGate x) = noiseGate2 x
+toFunc (ClipRel p) = clipRel2 p
+toFunc (ClipAbs v) = clipAbs2 v
+toFunc (SoftClipRel p s) = softClipRel2 p s
+toFunc (SoftClipAbs v s) = softClipAbs2 v s
+toFunc (CompRel p s) = compRel2 p s
+toFunc (CompAvg s) = compAvg2 s
+toFunc (CompAbs v s) = compAbs2 v s
+toFunc (Tremolo s d t) = tremolo2 s d t False
+toFunc (Panning s d t) = tremolo2 s d t True
+toFunc (Delay d f p) = undefined --delay d f p False
+toFunc (Echo d f p) = undefined --delay d f p True
 -------------------
 
 
 optimizarEfectos :: Efecto -> Efecto -> Maybe Efecto
 
 optimizarEfectos SetVolMax      SetVolMax       = Just SetVolMax
-optimizarEfectos (SetVolRel v1) (SetVolRel v2)  = Just $ SetVolRel (v1*v2)
+optimizarEfectos (SetVolRel v1) (SetVolRel v2)  = Just $ SetVolRel (v1*v2/100)
 optimizarEfectos (NoiseGate x)  (NoiseGate y)   = Just $ NoiseGate (max x y)
 optimizarEfectos (ClipAbs a)    (ClipAbs b)     = Just $ ClipAbs (min a b)
 optimizarEfectos (SoftClipAbs _ 100) e = Just e
@@ -75,18 +77,25 @@ optimizar (e1:(e2:es)) = case optimizarEfectos e1 e2 of
                             _      -> e1 : (optimizar (e2:es))
 
 
+-- | Left-to-right Kleisli composition of monads.
+kff :: Monad m => (a -> m b) -> (b -> m c) -> (a -> m c)
+kff !f !g !x = f x >>= g
+
 
 applyEff :: String -> String -> [Efecto] -> IO ()
 applyEff i o es = do wf <- readWav i
                      putStrLn "Wav parseado."
-                     let f = foldr (.) id (map toFunc (optimizar $ reverse es))
-                     putStrLn "Función de efectos creada."
+
+                     let f = foldr (>=>) return (map toFunc (optimizar $ reverse es))
                      
-                     newwf' <- softClipRel2 20 20 wf --tremolo2 500 1 0.7 False wf
-                     --newwf <- setVolMax2 newwf' --clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
-                     x <- getMaxVolume2 newwf'
-                     putStrLn $ "max vol "++(show x)++" bps "++ (show $ bitsPerSample $ fmtheader wf)
+--                     newwf' <- tremolo2 500 1 0.5 True wf
+--                     newwf <- tremolo2 500 1 0.5 True newwf' --setVolMax2 newwf' --clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
+--                     x <- getMaxVolume2 newwf'
+--                     putStrLn $ "max vol "++(show x)++" bps "++ (show $ bitsPerSample $ fmtheader wf)
                      
-                     writeWav o (f newwf')
+                     wf' <- delay 1500 2 0.5 False wf
+                     res <- f wf'
+                     putStrLn "Efectos aplicados."
+                     writeWav o res
                      putStrLn "Wav final escrito."
                      return ()

@@ -15,18 +15,7 @@ import System.Directory (removeFile)
 import qualified Data.ByteString as BS
 import qualified Data.List as L
 
---Misc-----------------------------
-
---esto puede ser sink
-getMaxVolume :: AudioData -> Sample
-getMaxVolume cs = let getMaxw :: (WaveContainer container) => container Sample -> Sample
-                      --getMaxw = cfoldl (\x y -> max (abs x) (abs y)) 0
-                      --getMaxw = cfoldl (\x y -> x 'seq' y 'seq' max (abs x) (abs y)) 0
-                      f !x !y = max (abs x) (abs y) -- hace que se evalúe x e y antes de ejecutar f. Lo hace menos lazy para que no reviente el stack.
-                      getMaxw = cfoldl f 0
-                      maxvs = (parMap rseq) (\c -> getMaxw $ chData c) cs
-                  in getMaxw maxvs
-
+--Misc--------------------------------------------------------------------------
 
 getMaxVolume2 :: WavFile -> IO Sample
 getMaxVolume2 wf = getSamples wf $$ getMaxVolume2_ 0
@@ -38,19 +27,6 @@ getMaxVolume2_ !m = do
         Nothing -> return m
         Just samples -> let f !x !y = max (abs x) (abs y)
                         in getMaxVolume2_ $ foldl f m samples 
-            
-                            
-                            
---esto puede ser sink
-getAvgVolume :: AudioData -> Sample
-getAvgVolume cs = let getAvgw :: (WaveContainer container) => container Sample -> Sample
-                      --getAvgw w = round $ (fromIntegral $ cfoldl (\x y -> (abs x) + (abs y)) 0 w) / (fromIntegral $ clength w)
-                      --getAvgw w = round $ (fromIntegral $ cfoldl (\x y -> seq (seq x y) ((abs x) + (abs y))) 0 w) / (fromIntegral $ clength w)  
-                      f :: (Integral t, Integral u) => t -> u -> t
-                      f !x !y = (abs $ fromIntegral x) + (abs $ fromIntegral y)
-                      getAvgw w = round $ (fromIntegral $ cfoldl f 0 w) / (fromIntegral $ clength w)
-                      avgvs = (parMap rseq) (\c -> getAvgw $ chData c) cs
-                  in getAvgw avgvs
 
 
 getAvgVolume2 :: WavFile -> IO Sample
@@ -170,33 +146,7 @@ fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x --reverse porque e
                                   res = shiftR (shiftL (loop xs' 0) gap) gap --shifteo para mantener el signo
                               in if sz==1 then (res-128) else res --si es 8 bits se almacena como unsigned!
 
-
-
---reemplaza el AudioData del archivo original por el que se le pase.
-putAudioData :: WavFile -> AudioData -> WavFile
-putAudioData wf a = let bps   = bitsPerSample $ fmtheader wf
-                        nchs  = numChannels $ fmtheader wf
-                        newsz = clength (chData $ a!!0) * (div bps 8) * nchs  --tamaño en bytes de los datos (cantidad de samples * bytes per sample * cantidad de canales)
-                        oldrh = riffheader wf
-                        oldfh = fmtheader wf
-                        olddh = dataheader wf
-                        newrh = HR { chunkID   = chunkID oldrh
-                                   , chunkSize = newsz + (fromIntegral headerSz)
-                                   , format    = format oldrh
-                                   }
-                        newdh = HD { chunk2ID = chunk2ID olddh
-                                   , chunk2Size = newsz
-                                   , dat = a --acá pongo el audiodata
-                                   , chFiles = []
-                                   }
-                    in W { riffheader = newrh
-                         , fmtheader  = oldfh
-                         , dataheader = newdh
-                         }
-
-getAudioData :: WavFile -> AudioData
-getAudioData = dat . dataheader
---------------------------------
+--------------------------------------------------------------------------------
 
 
 {-
@@ -205,16 +155,7 @@ les alcanza con hacer algo tipo GETSAMPLES $$ efecto_absoluto =$ PUTSAMPLES
 -}
 
 
---esto TENDRÍA QUE SER ONDA x<-GETMAXVOLUME; GETSAMPLES $$ SETVOL x =$ PUTSAMPLES
 --sube el volumen al máximo admitido por el formato sin distorsionar.
-setVolMax :: WavFile -> WavFile
-setVolMax wf = putAudioData wf $ setVolMaxData (getVolLimit wf) (getAudioData wf)
-
-setVolMaxData :: Sample -> AudioData -> AudioData
-setVolMaxData limit cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
-                             factor = ((fromIntegral limit)::Double) / maxv
-                         in setVolRelData (factor * 100) cs
-                         
 getVolLimit :: WavFile -> Sample
 getVolLimit wf = shiftL 1 (bitsPerSample (fmtheader wf) - 1) - 1
 
@@ -228,17 +169,6 @@ setVolMax2 wf = do maxv' <- getMaxVolume2 wf
 
 
 --control de volumen relativo a un porcentaje p del volumen máximo. VER QUE EL VALOR NO SE PASE DEL MÁXIMO ADMITIDO POR EL BPS! ya se chequea em fromSampletoByteString
-setVolRel :: Double -> WavFile -> WavFile
-setVolRel p wf = putAudioData wf $ setVolRelData p (getAudioData wf)
-
-setVolRelData :: Double -> AudioData -> AudioData
-setVolRelData p cs = let factor = p / 100
-                         modWave :: (WaveContainer container) => container Sample -> container Sample
-                         modWave = cmap (\x -> round $ ((fromIntegral x)::Double) * factor)
-                         modCh = (\c -> Channel { chID = chID c, chData = modWave (chData c) })
-                     in (parMap rseq) modCh cs
-
-
 setVolRel2 :: Double -> WavFile -> IO WavFile
 setVolRel2 p wf = let f s = round $ (fromIntegral s) * p/100
                   in getSamples wf $$ mapSamples f =$ putSamples wf
@@ -246,19 +176,6 @@ setVolRel2 p wf = let f s = round $ (fromIntegral s) * p/100
 
 
 --noise gate relativo a un porcentaje p del volumen máximo.
-noiseGate :: Double -> WavFile -> WavFile
-noiseGate p wf = putAudioData wf $ denoiseData p (getAudioData wf)
-
-denoiseData :: Double -> AudioData -> AudioData
-denoiseData p cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
-                       factor = p / 100
-                       limit = round $ factor * maxv
-                       modWave :: (WaveContainer container) => container Sample -> container Sample
-                       modWave = cmap (\s -> if abs s<limit then 0 else s)
-                       modCh = (\c -> Channel { chID = chID c, chData = modWave (chData c) })
-                   in (parMap rseq) modCh cs
-
-
 noiseGate2 :: Double -> WavFile -> IO WavFile
 noiseGate2 p wf = do
     maxv' <- getMaxVolume2 wf
@@ -271,16 +188,6 @@ noiseGate2 p wf = do
 
 
 --hard clipping simétrico relativo a un porcentaje p del volumen máximo ("distortion").
-clipRel :: Double -> WavFile -> WavFile
-clipRel p wf = putAudioData wf $ clipRelData p (getAudioData wf)
-
-clipRelData :: Double -> AudioData -> AudioData
-clipRelData p cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
-                       factor = p / 100
-                       clipval = factor * maxv
-                   in clipAbsData (round clipval) cs
-
-
 clipRel2 :: Double -> WavFile -> IO WavFile
 clipRel2 p wf = do
     maxv' <- getMaxVolume2 wf
@@ -291,17 +198,6 @@ clipRel2 p wf = do
 
 
 --hard clipping simétrico respecto a un valor absoluto v.
-clipAbs :: Sample -> WavFile -> WavFile
-clipAbs v wf = putAudioData wf $ clipAbsData v (getAudioData wf)
-
-clipAbsData :: Sample -> AudioData -> AudioData
-clipAbsData _ [] = []
-clipAbsData v cs = let lim = abs v
-                       cut = (\s -> if abs s < lim then s
-                                                   else signum s*lim)
-                   in (parMap rseq) (\c->Channel { chID = chID c, chData = cmap cut (chData c) }) cs
-
-
 clipAbs2 :: Sample -> WavFile -> IO WavFile
 clipAbs2 v wf = let lim = abs v
                     f :: Sample -> Sample
@@ -321,16 +217,6 @@ mapSamples f = do
 
 
 --soft clipping ("overdrive") simétrico respecto a un porcentaje p del volumen máximo, con porcentaje de sensitividad s (s=0 equivale a hard clipping, s=100 no produce cambios).
-softClipRel :: Double -> Double -> WavFile -> WavFile
-softClipRel p s wf = putAudioData wf $ softClipRelData p s (getAudioData wf)
-
-softClipRelData :: Double -> Double -> AudioData -> AudioData
-softClipRelData p s cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
-                             factor = p / 100
-                             clipval = factor * maxv
-                         in softClipAbsData (round clipval) s cs
-
-
 softClipRel2 :: Double -> Double -> WavFile -> IO WavFile
 softClipRel2 p s wf = do
     maxv' <- getMaxVolume2 wf
@@ -342,19 +228,6 @@ softClipRel2 p s wf = do
 
 
 --soft clipping simétrico respecto a un valor absoluto v.
-softClipAbs :: Sample -> Double -> WavFile -> WavFile
-softClipAbs v s wf = putAudioData wf $ softClipAbsData v s (getAudioData wf)
-
-softClipAbsData :: Sample -> Double -> AudioData -> AudioData
-softClipAbsData _ _ [] = []
-softClipAbsData v s cs = let lim = abs v
-                             pct = s / 100
-                             cut = ( \s -> if abs s < lim then s
-                                                          else let soft = pct * (fromIntegral (abs s-lim))
-                                                               in signum s * (lim + (round soft)) )
-                          in (parMap rseq) (\c->Channel { chID = chID c, chData = cmap cut (chData c) }) cs
-
-
 softClipAbs2 :: Sample -> Double -> WavFile -> IO WavFile
 softClipAbs2 v s wf = let lim = abs v
                           factor = s/100
@@ -366,16 +239,6 @@ softClipAbs2 v s wf = let lim = abs v
 
 --compresión, equilibra los volúmenes (sube los volúmenes "bajos" y baja los "altos")
 --respecto a un porcentaje p del volumen máximo, y con un porcentaje de sensitividad s (s=0 no produce cambios, s=100 aplana la onda).
-compRel :: Double -> Double -> WavFile -> WavFile
-compRel p s wf = putAudioData wf $ compRelData p s (getAudioData wf)
-
-compRelData :: Double -> Double -> AudioData -> AudioData
-compRelData p s cs = let maxv = (fromIntegral $ getMaxVolume cs)::Double
-                         factor = p / 100
-                         compval = factor * maxv
-                     in compAbsData (round compval) s cs
-
-
 compRel2 :: Double -> Double -> WavFile -> IO WavFile
 compRel2 p s wf = do
     maxv <- getMaxVolume2 wf
@@ -386,14 +249,6 @@ compRel2 p s wf = do
 
 
 -- compresión relativa al volumen promedio con una sensitividad s.
-compAvg :: Double -> WavFile -> WavFile
-compAvg s wf = putAudioData wf $ compAvgData s (getAudioData wf)
-
-compAvgData :: Double -> AudioData -> AudioData
-compAvgData s cs = let avg = getAvgVolume cs
-                   in compAbsData avg s cs
-
-
 compAvg2 :: Double -> WavFile -> IO WavFile
 compAvg2 s wf = do
     avg <- getAvgVolume2 wf
@@ -401,18 +256,6 @@ compAvg2 s wf = do
 
 
 -- compresión respecto a un valor absoluto v con una sensitividad s.
-compAbs :: Sample -> Double -> WavFile -> WavFile
-compAbs v s wf = putAudioData wf $ compAbsData v s (getAudioData wf)
-
-compAbsData :: Sample -> Double -> AudioData -> AudioData
-compAbsData _ _ [] = []
-compAbsData v s cs = let lim = abs v
-                         pct = s / 100
-                         f = \s -> signum s * ( abs s + round (fromIntegral (lim - abs s) * pct) )
-                     in (parMap rseq) (\c->Channel { chID = chID c, chData = cmap f (chData c) }) cs
-
-
-
 compAbs2 :: Sample -> Double -> WavFile -> IO WavFile
 compAbs2 v s wf = let lim = abs v
                       factor = s/100
@@ -425,28 +268,6 @@ compAbs2 v s wf = let lim = abs v
 -- Hace que el volumen varíe con forma de onda senoidal. Para eso hago una lista infinita de valores de una onda senoidal corrida para que sean positivos.
 -- Todos los argumentos deben ser positivos. TODO
 -- Precaución: puede aumentar o disminuir demasiado el volumen. Si se mete un SetVolMax después sirve bastante.
-tremolo :: Double -> Double -> Double -> Bool -> WavFile -> WavFile
-tremolo s d t isPanning wf = putAudioData wf $ tremoloData factoresPorCh cs
-                             where cs = getAudioData wf
-                                   srate = fromIntegral $ sampleRate $ fmtheader $ wf
-                                   ms = 1000/srate --ms per sample
-                                   s' = s/ms       --cuántas samples necesito para hacer un período
-                                   pi = 3.1415926535897932384626433832795028841971693993751
-                                   factor = 2*pi/s'
-                                   factores = [ (d + (sin(i*factor)) * d) / 2 + t | i<-[0..] ]
-                                   cslen = fromIntegral $ length cs
-                                   factoresPorCh = if isPanning then [ drop (round $ s'*i/cslen) factores | i<-[0..cslen] ]
-                                                                else replicate (round cslen) factores
-
-tremoloData :: [[Double]] -> AudioData -> AudioData
-tremoloData fss cs = zipWith (\fs c -> Channel { chID = chID c, chData = tremoloCh fs (chData c) }) fss cs
-
-tremoloCh :: WaveContainer container => [Double] -> container Sample -> container Sample
-tremoloCh (f:fs) ss = if cisEmpty ss then cempty
-                                     else ccons (round (fromIntegral (chead ss) * f)) (tremoloCh fs (ctail ss))
-
-
-
 tremolo2 :: Double -> Double -> Double -> Bool -> WavFile -> IO WavFile
 tremolo2 s d t isPanning wf = let chFilePaths = chFiles $ dataheader wf
                                   srate = fromIntegral $ sampleRate $ fmtheader $ wf
@@ -470,15 +291,92 @@ tremolo2_ factoress = do
         Just samples -> 
             let factores = map head factoress
                 fys = zip factores samples 
-                fun (f,s) = round $ (fromIntegral s) * f
+                fun (!f,!s) = round $ (fromIntegral s) * f
+                modSamples = map fun fys
             in do
-                yield $ map fun fys
+                yield $! modSamples
                 tremolo2_ $ map tail factoress
 
 -- delay, delay (ms), feedback (cantidad de veces que se repite), p (potencia, porcentaje)
 -- Todos los argumentos deben ser positivos. TODO
-delay :: Double -> Int -> Double -> Bool -> WavFile -> WavFile
-delay d f p isEcho wf = putAudioData wf $ delayData d f p isEcho wf (getAudioData wf)
+delay :: Double -> Int -> Double -> Bool -> WavFile -> IO WavFile
+delay d f p isEcho wf = 
+    let srate = fromIntegral $ sampleRate $ fmtheader $ wf
+        ms = 1000/(fromIntegral srate) --ms per sample
+        d' = round $ d/ms --d' samples equivalen a d milisegundos.
+        delays = [ d' * i | i<-[f,f-1..1] ]
+        factores = if isEcho then let f_ = fromIntegral f in [ p*i / (100*(f_+1)) | i<-[1..f_] ]
+                              else replicate f (p/100)
+        nchs = numChannels $ fmtheader wf
+--        delays' = concat $ map (replicate nchs) delays
+--        factores' = concat $ map (replicate nchs) factores
+        sampsz = div (bitsPerSample $ fmtheader wf) 8
+    in do
+        --tengo que hacer nchs archivos para cada echo!! no uno sólo!!! [ [ch0echo0, ch0echo1,...], [ch1echo0,ch1echo1,...], ...]
+        echoes <- liftIO $ sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.hs") | i<-[0..f-1]] | ch<-[0..nchs-1] ] --[(FilePath,Handle)]
+        ceros <- liftIO $ sequence $ map (\ (d,es) -> sequence $ map (\(_,h) -> BS.hPut h (BS.pack $ replicate (sampsz*d) 0)) es ) (zip delays echoes)
+        getSamples wf $$ armarOndas (zip echoes factores) sampsz =$ putSamples wf
+        let originalFiles = chFiles $ dataheader wf
+            echoFiles = map (map fst) echoes
+            todas = map (\(o,es)->(o:es)) (zip originalFiles echoFiles)
+        juntarOndas sampsz todas $$ putSamples wf
+        --return wf
+
+armarOndas :: [( [(FilePath,Handle)] , Double )] -> Int -> Conduit [Sample] IO [Sample]
+armarOndas efs sampsz = do
+    mx <- await
+    case mx of
+        Nothing -> 
+            do liftIO $ sequence $ map (\(es,_) -> sequence $ map (hClose.snd) es) efs
+               return ()
+        Just samples ->
+            let zs = zip efs samples
+            in do
+                liftIO $ sequence $ map ( \ ((es,f),s) -> sequence $ map (\(_,h) -> BS.hPut h (fromSampletoByteString sampsz $ round $ fromIntegral s * f)) es) zs
+                yield samples
+                armarOndas efs sampsz
+
+     
+juntarOndas :: Int -> [[FilePath]] -> Source IO [Sample]
+juntarOndas sampsz chEchos = do
+    chHandles <- liftIO $ sequence $ map (\es -> sequence $ map (\path -> openBinaryFile path ReadMode) es) chEchos
+    res <- juntarOndas_ sampsz chHandles
+    return res
+
+juntarOndas_ :: Int -> [[Handle]] -> Source IO [Sample]
+juntarOndas_ = undefined
+
+
+{-
+getSamples :: WavFile -> Source IO [Sample]
+getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
+                    chFilesPaths = chFiles $ dataheader wf
+                in do chHandles <- liftIO $ sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths
+                      res <- getSamples_ sampsz chHandles
+                      return res
+                      
+getSamples_ :: Int -> [Handle] -> Source IO [Sample]
+getSamples_ sampsz chHandles = 
+    let leer h = do 
+            eof <- liftIO $ hIsEOF h
+            if eof
+                then return Nothing
+                else do str <- BS.hGet h sampsz
+                        return $ Just str
+    in do
+        res <- liftIO $ sequence $ map leer chHandles
+        let noNothing _ Nothing = False
+            noNothing False _ = False
+            noNothing _ _ = True
+            check = foldl noNothing True res
+        if check then do yield $ map (\x-> case x of Just xx -> fromByteStringtoSample sampsz xx) res
+                         getSamples_ sampsz chHandles
+                 else do liftIO $ sequence $ map hClose chHandles
+                         return ()
+-}                         
+                         
+
+
 
 delayData :: Double -> Int -> Double -> Bool -> WavFile -> AudioData -> AudioData
 delayData d f p isEcho wf cs = let srate = fromIntegral $ sampleRate $ fmtheader $ wf
@@ -496,7 +394,14 @@ delayData d f p isEcho wf cs = let srate = fromIntegral $ sampleRate $ fmtheader
                                                            in czipWith (+) nuevo viejo
                                in (parMap rseq) (\c -> Channel {chID = chID c, chData = fzip factores delays (chData c)}) cs
                            
-
+{-
+    Por cada feedback crear un archivo nuevo con tantos ceros como tenga en delay
+    de ése, y después unirlos todos con suma, dejando la longitud del más largo.
+    
+    Se puede hacer con un conduit que haga yield de lo mismo que le llega, y que
+    ya tenga creados los archivos con los ceros, entonces lo único que tiene que
+    hacer es hPut (handle_archivo(i)) (fromBStoSample $ sample*factor(i)).
+-}
 
 
 {-
