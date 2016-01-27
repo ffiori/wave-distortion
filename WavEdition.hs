@@ -41,8 +41,8 @@ toFunc (CompAvg s) = compAvg2 s
 toFunc (CompAbs v s) = compAbs2 v s
 toFunc (Tremolo s d t) = tremolo2 s d t False
 toFunc (Panning s d t) = tremolo2 s d t True
-toFunc (Delay d f p) = undefined --delay d f p False
-toFunc (Echo d f p) = undefined --delay d f p True
+toFunc (Delay d f p) = delay d f p False
+toFunc (Echo d f p) = delay d f p True
 -------------------
 
 
@@ -93,8 +93,7 @@ applyEff i o es = do wf <- readWav i
 --                     x <- getMaxVolume2 newwf'
 --                     putStrLn $ "max vol "++(show x)++" bps "++ (show $ bitsPerSample $ fmtheader wf)
                      
-                     wf' <- delay 1500 2 0.5 False wf
-                     res <- f wf'
+                     res <- f wf
                      putStrLn "Efectos aplicados."
                      writeWav o res
                      putStrLn "Wav final escrito."

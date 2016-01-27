@@ -52,7 +52,8 @@ getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
                       
 getSamples_ :: Int -> [Handle] -> Source IO [Sample]
 getSamples_ sampsz chHandles = 
-    let leer h = do 
+    let leer :: Handle -> IO (Maybe BS.ByteString)
+        leer h = do 
             eof <- liftIO $ hIsEOF h
             if eof
                 then return Nothing
@@ -60,14 +61,11 @@ getSamples_ sampsz chHandles =
                         return $ Just str
     in do
         res <- liftIO $ sequence $ map leer chHandles
-        let noNothing _ Nothing = False
-            noNothing False _ = False
-            noNothing _ _ = True
-            check = foldl noNothing True res
-        if check then do yield $ map (\x-> case x of Just xx -> fromByteStringtoSample sampsz xx) res
-                         getSamples_ sampsz chHandles
-                 else do liftIO $ sequence $ map hClose chHandles
-                         return ()
+        case sequence res of
+            Just ss -> do yield $ map (fromByteStringtoSample sampsz) ss
+                          getSamples_ sampsz chHandles
+            Nothing -> do liftIO $ sequence $ map hClose chHandles
+                          return ()
 
 --SINK                                         
 --escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
@@ -306,99 +304,75 @@ delay d f p isEcho wf =
         d' = round $ d/ms --d' samples equivalen a d milisegundos.
         delays = [ d' * i | i<-[f,f-1..1] ]
         factores = if isEcho then let f_ = fromIntegral f in [ p*i / (100*(f_+1)) | i<-[1..f_] ]
-                              else replicate f (p/100)
+                             else replicate f (p/100)
         nchs = numChannels $ fmtheader wf
---        delays' = concat $ map (replicate nchs) delays
---        factores' = concat $ map (replicate nchs) factores
         sampsz = div (bitsPerSample $ fmtheader wf) 8
     in do
-        --tengo que hacer nchs archivos para cada echo!! no uno sólo!!! [ [ch0echo0, ch0echo1,...], [ch1echo0,ch1echo1,...], ...]
-        echoes <- liftIO $ sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.hs") | i<-[0..f-1]] | ch<-[0..nchs-1] ] --[(FilePath,Handle)]
-        ceros <- liftIO $ sequence $ map (\ (d,es) -> sequence $ map (\(_,h) -> BS.hPut h (BS.pack $ replicate (sampsz*d) 0)) es ) (zip delays echoes)
-        getSamples wf $$ armarOndas (zip echoes factores) sampsz =$ putSamples wf
-        let originalFiles = chFiles $ dataheader wf
+        -- echoes = [ [ch0echo0, ch0echo1,...], [ch1echo0,ch1echo1,...], ...], o sea :: [[(FilePath,Handle)]]
+        echoes <- liftIO $ sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp") | i<-[0..f-1]] | ch<-[0..nchs-1] ]
+
+        let aux es = sequence $ map (\(dx,(_,h)) -> BS.hPut h (BS.pack $ replicate (sampsz*dx) 0)) es
+        liftIO $ sequence $ map aux (map (zip delays) echoes)
+
+        wf' <- getSamples wf $$ armarOndas (map (zip factores) echoes) sampsz =$ putSamples wf
+        liftIO $ sequence $ map (hClose.snd) $ concat echoes
+        
+        let originalFiles = chFiles $ dataheader wf'
             echoFiles = map (map fst) echoes
             todas = map (\(o,es)->(o:es)) (zip originalFiles echoFiles)
-        juntarOndas sampsz todas $$ putSamples wf
-        --return wf
+        wffinal <- juntarOndas sampsz todas $$ putSamples wf'
+        
+        liftIO $ sequence $ map (removeFile.fst) $ concat echoes
+        return wffinal
 
-armarOndas :: [( [(FilePath,Handle)] , Double )] -> Int -> Conduit [Sample] IO [Sample]
+
+armarOndas :: [[ (Double, (FilePath,Handle)) ]] -> Int -> Conduit [Sample] IO [Sample]
 armarOndas efs sampsz = do
     mx <- await
     case mx of
-        Nothing -> 
-            do liftIO $ sequence $ map (\(es,_) -> sequence $ map (hClose.snd) es) efs
-               return ()
+        Nothing -> return ()
         Just samples ->
             let zs = zip efs samples
+                aux (es,s) = sequence $ map (\(f,(_,h)) -> BS.hPut h (fromSampletoByteString sampsz $ round $ fromIntegral s * f)) es
             in do
-                liftIO $ sequence $ map ( \ ((es,f),s) -> sequence $ map (\(_,h) -> BS.hPut h (fromSampletoByteString sampsz $ round $ fromIntegral s * f)) es) zs
+                liftIO $ sequence $ map aux zs
                 yield samples
                 armarOndas efs sampsz
 
      
 juntarOndas :: Int -> [[FilePath]] -> Source IO [Sample]
 juntarOndas sampsz chEchos = do
-    chHandles <- liftIO $ sequence $ map (\es -> sequence $ map (\path -> openBinaryFile path ReadMode) es) chEchos
-    res <- juntarOndas_ sampsz chHandles
+    chHandless <- liftIO $ sequence $ map (\es -> sequence $ map (\path -> openBinaryFile path ReadMode) es) chEchos
+    res <- juntarOndas_ sampsz chHandless
     return res
 
 juntarOndas_ :: Int -> [[Handle]] -> Source IO [Sample]
-juntarOndas_ = undefined
-
-
-{-
-getSamples :: WavFile -> Source IO [Sample]
-getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
-                    chFilesPaths = chFiles $ dataheader wf
-                in do chHandles <- liftIO $ sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths
-                      res <- getSamples_ sampsz chHandles
-                      return res
-                      
-getSamples_ :: Int -> [Handle] -> Source IO [Sample]
-getSamples_ sampsz chHandles = 
-    let leer h = do 
+juntarOndas_ sampsz chHandless = 
+    let leer :: Handle -> IO (Maybe Sample)
+        leer h = do 
             eof <- liftIO $ hIsEOF h
             if eof
                 then return Nothing
                 else do str <- BS.hGet h sampsz
-                        return $ Just str
+                        return $ Just (fromByteStringtoSample sampsz str)
     in do
-        res <- liftIO $ sequence $ map leer chHandles
-        let noNothing _ Nothing = False
-            noNothing False _ = False
-            noNothing _ _ = True
-            check = foldl noNothing True res
-        if check then do yield $ map (\x-> case x of Just xx -> fromByteStringtoSample sampsz xx) res
-                         getSamples_ sampsz chHandles
-                 else do liftIO $ sequence $ map hClose chHandles
-                         return ()
--}                         
-                         
+        presamples <- liftIO $ sequence $ map (\hs -> sequence $ map leer hs) chHandless -- :: [[Maybe Sample]]
+        let samples = map (foldl aux Nothing) presamples
+            aux Nothing Nothing = Nothing
+            aux Nothing (Just x) = Just x
+            aux (Just x) Nothing = Just x
+            aux (Just x) (Just y) = Just (x+y)
+        case sequence samples of
+            Just ss -> do yield ss
+                          juntarOndas_ sampsz chHandless
+            Nothing -> do liftIO $ sequence $ map (\hs -> sequence $ map hClose hs) chHandless
+                          return ()
 
-
-
-delayData :: Double -> Int -> Double -> Bool -> WavFile -> AudioData -> AudioData
-delayData d f p isEcho wf cs = let srate = fromIntegral $ sampleRate $ fmtheader $ wf
-                                   ms = 1000/(fromIntegral srate) --ms per sample
-                                   d' = round $ d/ms --d' samples equivalen a d milisegundos.
-                                   delays = [ d' * i | i<-[f,f-1..1] ]
-                                   factores = if isEcho then let f_ = fromIntegral f in [ p*i / (100*(f_+1)) | i<-[1..f_] ]
-                                                        else replicate f (p/100)
-                                   fzip :: WaveContainer container => [Double] -> [Int] -> container Sample -> container Sample
-                                   fzip _ [] c = c
-                                   fzip (f':fs) (v:vs) c = let rec = fzip fs vs c
-                                                               ceros = creplicate v 0
-                                                               nuevo = cappend ceros (cmap (\x -> round $ fromIntegral x * f') c)
-                                                               viejo = cappend rec ceros --estoy poniendo 0s de más (ya que clength rec >= clength c). Con algo menor a v alcanza, pero total zipWith descarta lo que sobra.
-                                                           in czipWith (+) nuevo viejo
-                               in (parMap rseq) (\c -> Channel {chID = chID c, chData = fzip factores delays (chData c)}) cs
-                           
 {-
-    Por cada feedback crear un archivo nuevo con tantos ceros como tenga en delay
+    Por cada feedback creo un archivo nuevo con tantos ceros como tenga en delay
     de ése, y después unirlos todos con suma, dejando la longitud del más largo.
     
-    Se puede hacer con un conduit que haga yield de lo mismo que le llega, y que
+    Después con un conduit hago yield de lo mismo que le llega, y que
     ya tenga creados los archivos con los ceros, entonces lo único que tiene que
     hacer es hPut (handle_archivo(i)) (fromBStoSample $ sample*factor(i)).
 -}
