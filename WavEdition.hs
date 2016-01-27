@@ -93,7 +93,8 @@ applyEff i o es = do wf <- readWav i
 --                     x <- getMaxVolume2 newwf'
 --                     putStrLn $ "max vol "++(show x)++" bps "++ (show $ bitsPerSample $ fmtheader wf)
                      
-                     res <- f wf
+                     --wf' <-  getSamples wf $$ putSamples wf
+                     res <- f wf--wf'
                      putStrLn "Efectos aplicados."
                      writeWav o res
                      putStrLn "Wav final escrito."

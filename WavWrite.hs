@@ -114,31 +114,7 @@ putBlock2 handle = do
             liftIO $ sequence $ map (BS.hPut handle) samples
             putBlock2 handle
             
-                         
-                         
-{-                        
---escribe los samples de las ondas.
-putWaves :: Escritor m => WavFile -> m ()
-putWaves wf = let chs = dat $ dataheader wf
-                  bps = bitsPerSample $ fmtheader wf
-              in putWaves_ bps [ chData c | c<-chs ]
 
-putWaves_ :: (WaveContainer container, Escritor m) => Int -> [container Sample] -> m ()
-putWaves_ bps chs = if cisEmpty (chs!!0) then return () --cuando se vacía un canal es porque todos se vaciaron.
-                                         else do putBlock bps chs
-                                                 putWaves_ bps [ ctail w | w<-chs ]
-
-
---escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
-putBlock :: (WaveContainer container, Escritor m) => Int -> [container Sample] -> m ()
-putBlock bps []     = return ()
-putBlock bps (w:ws) = do case bps of 
-                            8  -> putWord8' . fromIntegral $ chead w + 128 --recordar que los WAVE de 8 bps tienen sus samples unsigned.
-                            16 -> putWord16le' . fromIntegral $ chead w
-                            24 -> putWord24le' . fromIntegral $ chead w
-                            32 -> putWord32le' . fromIntegral $ chead w
-                         putBlock bps ws                                         
--}
 
 -- función que falta de la familia putWord
 putWord24le :: Word32 -> Put
