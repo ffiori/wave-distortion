@@ -41,6 +41,11 @@ data Hfmt = HF { subchunk1ID :: String  --big endian
                , byteRate :: Int
                , blockAlign :: Int 
                , bitsPerSample :: Int
+               , cbSize :: Maybe Int
+               , validBitsPerSample :: Maybe Int
+               , chMask :: Maybe Int
+               , subFormat :: Maybe Int
+               , check :: Maybe String
                }
 
 data Hdata = HD { chunk2ID :: String    --big endian
@@ -143,8 +148,14 @@ riffS :: [Int]    --tamaños de los campos del header RIFF
 riffS = [4,4,4]
 
 fmtS :: [Int]     --tamaños de los campos del header fmt
-fmtS = [4,4,2,2,4,4,2,2]
+fmtS = [2,2,4,4,2,2]
+
+fmtExtS :: [Int]
+fmtExtS = [2,2,4,2,14]
 
 dataS :: [Int]    --tamaños de los campos del header data
 dataS = [4,4]
+
+defaultS :: [Int] --tamaños de los campos chunkID, chunkSize que los tienen que tener todos los chunks.
+defaultS = [4,4]
 

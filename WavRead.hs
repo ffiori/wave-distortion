@@ -64,43 +64,55 @@ parsehRIFF h = do fields <- recursiveGet h riffS
                             }
 
 parsehFMT :: Handle -> IO Hfmt
-parsehFMT h = do fields <- recursiveGet h fmtS
-                 let id = getString (fields!!0)
-                     sz = getInt (fields!!1)
+parsehFMT h = do dfields <- recursiveGet h defaultS
+                 let id = getString (dfields!!0)
+                     sz = getInt (dfields!!1)
                  if id/="fmt " then do liftIO $ hSeek h RelativeSeek (fromIntegral sz)
                                        liftIO $ putStrLn $ "    chunk descartado de ID:"++id++"."
                                        parsehFMT h --descarto todos los chunks opcionales del formato WAVE.
-                 else return HF { subchunk1ID   = id
-                                , subchunk1Size = sz
-                                , audioFormat   = getInt (fields!!2)
-                                , numChannels   = getInt (fields!!3)
-                                , sampleRate    = getInt (fields!!4)
-                                , byteRate      = getInt (fields!!5)
-                                , blockAlign    = getInt (fields!!6)
-                                , bitsPerSample = getInt (fields!!7)
-                                }
+                 else do fields <- recursiveGet h fmtS
+                         let format = getInt (fields!!0)
+                         fieldsExt <- if format == -2 then recursiveGet h fmtExtS else return []
+                         return HF { subchunk1ID   = id
+                                   , subchunk1Size = sz
+                                   , audioFormat   = format
+                                   , numChannels   = getInt (fields!!1)
+                                   , sampleRate    = getInt (fields!!2)
+                                   , byteRate      = getInt (fields!!3)
+                                   , blockAlign    = getInt (fields!!4)
+                                   , bitsPerSample = getInt (fields!!5)
+                                   , cbSize = if format == -2 then Just (getInt (fieldsExt!!0)) else Nothing
+                                   , validBitsPerSample = if format == -2 then Just (getInt (fieldsExt!!1)) else Nothing
+                                   , chMask = if format == -2 then Just (getInt (fieldsExt!!2)) else Nothing
+                                   , subFormat = if format == -2 then Just (getInt (fieldsExt!!3)) else Nothing
+                                   , check = if format == -2 then Just (getString (fieldsExt!!4)) else Nothing
+                                   }
 
 parsehDATA :: Handle -> HRIFF -> Hfmt -> IO Hdata
 parsehDATA h rh fh = 
-    if audioFormat fh /= 1
-    then error $ "Archivo comprimido no soportado por el programa. Formato de compresión "++(show $ audioFormat fh)
-    else if bitsPerSample fh > 32 || mod (bitsPerSample fh) 8 /= 0
-    then error $ "Profundidad de muestras no soportada por el programa. Sólo se admiten muestras de 8, 16, 24 y 32 bits. BitsPerSample "++(show $ bitsPerSample fh)
-    else do
-        fields <- recursiveGet h dataS
-        let id = getString (fields!!0)
-            sz = getInt (fields!!1)
-        if id/="data" then do liftIO $ hSeek h RelativeSeek (fromIntegral sz)
-                              liftIO $ putStrLn $ "    chunk descartado de ID:"++id++"."
-                              parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
-                      else do
-                          chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
-                          liftIO $ putStrLn id
-                          return HD { chunk2ID   = id 
-                                    , chunk2Size = sz
-                                    , dat        = [Channel {chID=0, chData=[]}]
-                                    , chFiles = chFilePaths
-                                    }
+    let format = audioFormat fh
+        format2 = case subFormat fh of
+                       Just x -> x
+                       Nothing -> 1
+    in
+        if format > 1 || (format == -2 && format2 > 1)
+        then error $ "Archivo comprimido no soportado por el programa. Formato de compresión "++(show $ audioFormat fh)
+        else if bitsPerSample fh > 32 || mod (bitsPerSample fh) 8 /= 0
+        then error $ "Profundidad de muestras no soportada por el programa. Sólo se admiten muestras de 8, 16, 24 y 32 bits. BitsPerSample "++(show $ bitsPerSample fh)
+        else do
+            fields <- recursiveGet h dataS
+            let id = getString (fields!!0)
+                sz = getInt (fields!!1)
+            if id/="data" then do liftIO $ hSeek h RelativeSeek (fromIntegral sz)
+                                  liftIO $ putStrLn $ "    chunk descartado de ID:"++id++"."
+                                  parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
+                          else do
+                              chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
+                              return HD { chunk2ID   = id 
+                                        , chunk2Size = sz
+                                        , dat        = [Channel {chID=0, chData=[]}]
+                                        , chFiles = chFilePaths
+                                        }
 
 
 -- Data --
