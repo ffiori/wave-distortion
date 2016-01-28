@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 
-module Distort where
+module Distort (setVolMax,setVolRel,noiseGate,clipRel,clipAbs,softClipRel,
+                softClipAbs,compRel,compAvg,compAbs,tremolo,delay) where
 
 import WavTypes
 
@@ -141,14 +142,21 @@ fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x --reverse porque e
                                   res = shiftR (shiftL (loop xs' 0) gap) gap --shifteo para mantener el signo
                               in if sz==1 then (fromIntegral (head xs') - 128) else res --si es 8 bits se almacena como unsigned!
 
---------------------------------------------------------------------------------
 
+mapSamples :: (Sample -> Sample) -> Conduit [Sample] IO [Sample]
+mapSamples f = do
+    mx <- await
+    case mx of
+        Nothing -> return ()
+        Just samples -> do 
+            yield $ map f samples
+            mapSamples f
+--------------------------------------------------------------------------------
 
 {-
 Los efectos que usan valores absoluto no necesitan ni siquiera usar un sink aparte antes,
 les alcanza con hacer algo tipo GETSAMPLES $$ efecto_absoluto =$ PUTSAMPLES
 -}
-
 
 --sube el volumen al máximo admitido por el formato sin distorsionar.
 getVolLimit :: WavFile -> Sample
@@ -200,17 +208,6 @@ clipAbs v wf = let lim = abs v
                in getSamples wf $$ mapSamples f =$ putSamples wf
 
 
-mapSamples :: (Sample -> Sample) -> Conduit [Sample] IO [Sample]
-mapSamples f = do
-    mx <- await
-    case mx of
-        Nothing -> return ()
-        Just samples -> do 
-            yield $ map f samples
-            mapSamples f
-
-
-
 --soft clipping ("overdrive") simétrico respecto a un porcentaje p del volumen máximo, con porcentaje de sensitividad s (s=0 equivale a hard clipping, s=100 no produce cambios).
 softClipRel :: Double -> Double -> WavFile -> IO WavFile
 softClipRel p s wf = do
@@ -219,7 +216,6 @@ softClipRel p s wf = do
         factor = p / 100
         clipval = round $ factor * maxv
     softClipAbs clipval s wf
-
 
 
 --soft clipping simétrico respecto a un valor absoluto v.
@@ -295,27 +291,6 @@ tremolo_ f !i isPanning nchs = do
                 tremolo_ f (i+1) isPanning nchs
 
 
-{-
-Solución elegante usando listas infinitas pero no la pude hacer correr en memoria constante.
-
-factoresPorCh = if isPanning then [ [f (fromIntegral nc) i | i<-[0..]] | nc<-[0..nchs-1] ] else [ [f 0  i | i<-[0..]] | nc<-[0..nchs-1] ]
-
-tremolo_ :: [[Double]] -> Conduit [Sample] IO [Sample]
-tremolo_ factoress = do
-    mx <- await
-    case mx of
-        Nothing -> return ()
-        Just samples -> 
-            let factores = map head factoress
-                fys = zip factores samples 
-                fun (!f,!s) = round $ (fromIntegral s) * f
-                modSamples = map fun fys
-            in do
-                yield $! modSamples
-                tremolo_ $ map tail factoress
--}
-
-
 -- delay: d = delay (ms), f = feedback (cantidad de veces que se repite), p = potencia o porcentaje de volumen.
 -- isEcho = True => el delay se va disminuyendo linealmente en potencia
 delay :: Double -> Int -> Double -> Bool -> WavFile -> IO WavFile
@@ -381,6 +356,7 @@ juntarOndas_ sampsz chHandless =
     in do
         presamples <- liftIO $ sequence $ map (\hs -> sequence $ map leer hs) chHandless -- :: [[Maybe Sample]]
         let samples = map (foldl aux Nothing) presamples
+            aux :: Maybe Sample -> Maybe Sample -> Maybe Sample
             aux Nothing Nothing = Nothing
             aux Nothing (Just x) = Just x
             aux (Just x) Nothing = Just x
@@ -398,53 +374,4 @@ juntarOndas_ sampsz chHandless =
     Después con un conduit hago yield de lo mismo que le llega, y que
     ya tenga creados los archivos con los ceros, entonces lo único que tiene que
     hacer es hPut (handle_archivo(i)) (fromBStoSample $ sample*factor(i)).
--}
-
-
-{-
-
--- fft
-import Data.List(foldl')
-import Data.Complex(Complex(..),magnitude,realPart,imagPart,cis)
--- ...
-
-
--- | /O(n^2)/. The Discrete Fourier Transform.
-dft :: [Complex Double] -> [Complex Double]
-dft xs = let len = length xs
-          in zipWith (go len) [0..len-1] (repeat xs)
-  where i = 0 :+ 1
-        fi = fromIntegral
-        go len k xs = foldl' (+) 0 . flip fmap [0..len-1]
-          $ \n -> (xs!!n) * exp (negate(2*pi*i*fi n*fi k)/fi len)
-
-idft :: [Complex Double] -> [Complex Double]
-idft [] = []
-idft xs = let n = (fromIntegral . length) xs
-              (t:ts) = dft xs
-          in (t/n) : ((reverse . fmap (/n)) ts)
--}
-{-
-fft :: [Complex Double] -> [Complex Double]
-fft [] = []
-fft [x] = [x]
-fft xs = zipWith (+) ys ts ++ zipWith (-) ys ts
-    where n = length xs
-          ys = fft evens
-          zs = fft odds 
-          (evens, odds) = split xs
-          split [] = ([], [])
-          split [x] = ([x], [])
-          split (x:y:xs) = (x:xt, y:yt) where (xt, yt) = split xs
-          ts = zipWith (\z k -> exp' k n * z) zs [0..]
-          exp' k n = cis $ -2 * pi * (fromIntegral k) / (fromIntegral n)
-
-fff = map magnitude . fft
-
-
-ifft :: [Complex Double] -> [Complex Double]
-ifft [] = []
-ifft xs = let n = (fromIntegral . length) xs
-              (t:ts) = fft xs
-          in (t/n) : ((reverse . fmap (/n)) ts)
 -}

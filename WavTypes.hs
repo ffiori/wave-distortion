@@ -11,13 +11,9 @@
     En el programa se usará la versión canónica del formato WAVE,
     es decir, que sólo se divide en tres partes (RIFF, fmt, data).
 -}
-{-# LANGUAGE BangPatterns #-}
+
 
 module WavTypes where
-
-
-import qualified Data.Foldable as Foldable
-
 
 data WavFile = W { riffheader :: HRIFF
                  , fmtheader :: Hfmt
@@ -75,7 +71,7 @@ riffS = [4,4,4]
 fmtS :: [Int]     --tamaños de los campos del header fmt
 fmtS = [2,2,4,4,2,2]
 
-fmtExtS :: [Int]
+fmtExtS :: [Int]  --tamaños de los campos de la extensión del header fmt
 fmtExtS = [2,2,4,2,14]
 
 dataS :: [Int]    --tamaños de los campos del header data

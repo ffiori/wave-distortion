@@ -1,12 +1,14 @@
 {-# LANGUAGE BangPatterns #-}
-module WavEdition where
+module WavEdition (applyEff, Efecto(SetVolMax,SetVolRel,NoiseGate,ClipRel,ClipAbs,
+                   SoftClipRel,SoftClipAbs,CompRel,CompAvg,CompAbs,Tremolo,Panning,
+                   Delay,Echo)) where
 
 import WavTypes
 import WavRead
 import WavWrite
 import Distort
 
-import Control.Monad.State
+import Control.Monad.State ((>=>))
 import Data.Conduit
 
 data Efecto = SetVolMax
@@ -42,7 +44,6 @@ toFunc (Tremolo s d t) = tremolo s d t False
 toFunc (Panning s d t) = tremolo s d t True
 toFunc (Delay d f p) = delay d f p False
 toFunc (Echo d f p) = delay d f p True
--------------------
 
 
 optimizarEfectos :: Efecto -> Efecto -> Maybe Efecto
