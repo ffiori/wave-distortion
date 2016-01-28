@@ -1,5 +1,3 @@
---HACER CONTROL DE ERRORES USANDO try CON merror. IDEM EN WAVWRITE
-
 module WavRead (readWav) where
 
 import qualified Data.ByteString as BS
@@ -17,27 +15,6 @@ import Data.Conduit
 import Control.Monad.IO.Class (liftIO)
 
 import WavTypes
-
-
-class Monad m => Lector m where
-    merror :: String -> m a
-    getWord8' :: m Word8
-    getWord16le' :: m Word16
-    getWord24le' :: m Word32
-    getWord32le' :: m Word32
-    getLazyByteString' :: Int -> m BS.ByteString
-    runGet' :: m a -> BS.ByteString -> a
-    
-instance Lector Get where
-    merror = error
-    getLazyByteString' = getByteString
-    getWord8' = getWord8
-    getWord16le' = getWord16le
-    getWord24le' = getWord24le
-    getWord32le' = getWord32le
-    runGet' ma bs = runGet ma (BL.fromStrict bs)
-
-type MonadaLectora = Get
 
 
 readWav :: FilePath -> IO WavFile
@@ -96,7 +73,7 @@ parsehDATA h rh fh =
                        Nothing -> 1
     in
         if format > 1 || (format == -2 && format2 > 1)
-        then error $ "Archivo comprimido no soportado por el programa. Formato de compresión "++(show $ audioFormat fh)
+        then error $ "Archivo comprimido o de punto flotante no soportado por el programa. Formato de compresión "++(show $ audioFormat fh)
         else if bitsPerSample fh > 32 || mod (bitsPerSample fh) 8 /= 0
         then error $ "Profundidad de muestras no soportada por el programa. Sólo se admiten muestras de 8, 16, 24 y 32 bits. BitsPerSample "++(show $ bitsPerSample fh)
         else do
@@ -110,7 +87,6 @@ parsehDATA h rh fh =
                               chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
                               return HD { chunk2ID   = id 
                                         , chunk2Size = sz
-                                        , dat        = [Channel {chID=0, chData=[]}]
                                         , chFiles = chFilePaths
                                         }
 
@@ -167,23 +143,24 @@ recursiveGet h hS = do field <- BS.hGet h (head hS)
                        fs <- recursiveGet h (tail hS)
                        return (field:fs)
 
+
 --parsea un signed Int de 32bits en little-endian.
 getInt :: BS.ByteString -> Int
 getInt le = case BS.length le of
-                1 -> fromIntegral (runGet' (getWord8'::MonadaLectora Word8) le) - 128                     --el estándar dice que muestras de 8bits son unsigned. De todos modos las paso a signed con el -128.
-                2 -> fromIntegral (fromIntegral (runGet' (getWord16le'::MonadaLectora Word16) le)::Int16) --primero parseo como Int16 y después como Int para preservar el signo.
-                3 -> fromIntegral $ runGet' (getWord24le'::MonadaLectora Word32) le                       --getWord24le devuelve signed.
-                4 -> fromIntegral $ runGet' (getWord32le'::MonadaLectora Word32) le
+                1 -> fromIntegral (runGet getWord8 (BL.fromStrict le)) - 128                     --el estándar dice que muestras de 8bits son unsigned. De todos modos las paso a signed con el -128.
+                2 -> fromIntegral (fromIntegral (runGet getWord16le (BL.fromStrict le))::Int16) --primero parseo como Int16 y después como Int para preservar el signo.
+                3 -> fromIntegral $ runGet getWord24le (BL.fromStrict le)                       --getWord24le devuelve signed.
+                4 -> fromIntegral $ runGet getWord32le (BL.fromStrict le)
                 _ -> error $ "getInt: longitud mayor a 4 bytes o 0 bytes. " ++ (show le)
                 
 getString :: BS.ByteString -> String
 getString bs = map (chr.fromIntegral) (BS.unpack bs)
 
 --función no definida en la familia getWordnle.
-getWord24le :: Lector m => m Word32
-getWord24le = do x <- getWord8'
-                 y <- getWord8'
-                 z <- getWord8'
+getWord24le :: Get Word32
+getWord24le = do x <- getWord8
+                 y <- getWord8
+                 z <- getWord8
                  let z' = shiftR (shiftL ((fromIntegral z)::Int32) 24) 8 --lo corro 24 y vuelvo 8 para mantener el signo (en vez de correrlo 16 de una)
                      y' = shiftL ((fromIntegral y)::Int32) 8
                  return $ fromIntegral (z' .|. y') .|. (fromIntegral x)
