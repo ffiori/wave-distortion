@@ -7,6 +7,9 @@
 -- buena documentación y ejemplos
 -- http://www-mmsp.ece.mcgill.ca/documents/audioformats/wave/wave.html
 
+-- ejemplos variados
+-- http://download.wavetlan.com/SVV/Media/HTTP/http-wav.htm
+
 {-
     En el programa se usará la versión canónica del formato WAVE,
     es decir, que sólo se divide en tres partes (RIFF, fmt, data).
@@ -55,6 +58,9 @@ data Hdata = HD { chunk2ID :: String    --big endian
 
 headerSz :: Int
 headerSz = riffSz + fmtSz + hdataSz
+
+headerExtSz :: Int
+headerExtSz = headerSz + (sum fmtExtS)
 
 riffSz :: Int
 riffSz = sum riffS

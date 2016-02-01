@@ -10,13 +10,39 @@ import Data.Word
 import Data.Conduit
 import System.IO
 import Control.Monad.IO.Class (liftIO)
-import System.Directory (removeFile)
+import System.Directory (removeFile,doesFileExist)
 import qualified Data.ByteString as BS
 
+import qualified Control.Exception as E
+import System.IO.Error
+
 --Misc--------------------------------------------------------------------------
+--borra un archivo si es que existe
+safelyRemoveFile :: FilePath -> IO ()
+safelyRemoveFile path = do exists <- doesFileExist path
+                           if exists then removeFile path else return ()
+
+--ejecuta action y si es que falla borra los temporales de wf y los que hay en newChs
+safelyDo :: IO WavFile -> WavFile -> [(FilePath,Handle)] -> IO WavFile
+safelyDo action wf newChs = action `E.catch` catcher
+    where 
+        catcher :: E.SomeException -> IO WavFile
+        catcher e = do
+            sequence $ map (hClose.snd) newChs
+            sequence $ map safelyRemoveFile $ (map fst newChs)++(chFiles $ dataheader wf)
+            E.throw e
+
+
+--devuelve el máximo valor que puede tener un sample de bitsPerSample bits
+getVolLimit :: WavFile -> Sample
+getVolLimit wf = shiftL 1 (bitsPerSample (fmtheader wf) - 1) - 1
+
 
 getMaxVolume :: WavFile -> IO Sample
-getMaxVolume wf = getSamples wf $$ getMaxVolume_ 0
+getMaxVolume wf = (getSamples wf $$ getMaxVolume_ 0) `E.catch` catcher
+    where catcher :: E.SomeException -> IO Sample
+          catcher e = do sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
+                         E.throw e
 
 getMaxVolume_ :: Sample -> Sink [Sample] IO Sample
 getMaxVolume_ !m = do
@@ -28,7 +54,10 @@ getMaxVolume_ !m = do
 
 
 getAvgVolume :: WavFile -> IO Sample
-getAvgVolume wf = getSamples wf $$ getAvgVolume_ 0 0
+getAvgVolume wf = (getSamples wf $$ getAvgVolume_ 0 0) `E.catch` catcher
+    where catcher :: E.SomeException -> IO Sample
+          catcher e = do sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
+                         E.throw e
 
 getAvgVolume_ :: Integer -> Integer -> Sink [Sample] IO Sample
 getAvgVolume_ !tot !cant = do
@@ -45,9 +74,8 @@ getSamples :: WavFile -> Source IO [Sample]
 getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
                     chFilesPaths = chFiles $ dataheader wf
                 in do chHandles <- liftIO $ sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths
-                      res <- getSamples_ sampsz chHandles
-                      return res
-                      
+                      getSamples_ sampsz chHandles
+
 getSamples_ :: Int -> [Handle] -> Source IO [Sample]
 getSamples_ sampsz chHandles = 
     let leer :: Handle -> IO (Maybe BS.ByteString)
@@ -65,15 +93,15 @@ getSamples_ sampsz chHandles =
             Nothing -> do liftIO $ sequence $ map hClose chHandles
                           return ()
 
+makeTemps :: WavFile -> IO [(FilePath,Handle)]
+makeTemps wf = let nc = numChannels $ fmtheader wf
+               in sequence [ openBinaryTempFile "." ("ch"++(show i)++"_.tmp") | i<-[0..nc-1] ]
+
+
 --SINK                                         
 --escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
-putSamples :: WavFile -> Sink [Sample] IO WavFile
-putSamples wf = let nc = numChannels $ fmtheader wf
-                in do newChFiles <- liftIO $ makeTemps nc nc
-                      putSamples_ wf newChFiles
-
-putSamples_ :: WavFile -> [(FilePath,Handle)] -> Sink [Sample] IO WavFile
-putSamples_ wf newChFiles = do
+putSamples :: WavFile -> [(FilePath,Handle)] -> Sink [Sample] IO WavFile
+putSamples wf newChFiles = do
     mx <- await
     case mx of
         Nothing -> do liftIO $ sequence $ map (hFlush.snd) newChFiles
@@ -86,7 +114,7 @@ putSamples_ wf newChFiles = do
                             samples' = map (fromSampletoByteString sampsz) samples
                         in do 
                             liftIO $ sequence $ map (\(s,(_,h)) -> BS.hPut h s) (zip samples' newChFiles)
-                            putSamples_ wf newChFiles
+                            putSamples wf newChFiles
 
 
 updateWavFile :: WavFile -> [(FilePath,Handle)] -> IO WavFile
@@ -98,7 +126,7 @@ updateWavFile wf newChFiles = do
         oldfh = fmtheader wf
         olddh = dataheader wf
         newrh = HR { chunkID   = chunkID oldrh
-                   , chunkSize = (fromIntegral newsz) + headerSz - (riffS!!0) - (riffS!!1) --ver WavTypes.hs
+                   , chunkSize = (fromIntegral newsz) - (riffS!!0) - (riffS!!1) + if audioFormat oldfh == -2 then headerExtSz else headerSz --ver WavTypes.hs
                    , format    = format oldrh
                    }
         newdh = HD { chunk2ID = chunk2ID olddh
@@ -110,13 +138,6 @@ updateWavFile wf newChFiles = do
                   , dataheader = newdh
                   }
     return newWF
-
-
-makeTemps :: Int -> Int -> IO [(FilePath,Handle)]
-makeTemps 0 _  = return []
-makeTemps n nc = do tmps <- makeTemps (n-1) nc
-                    tmp <- openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")
-                    return $ tmp : tmps
 
 
 fromSampletoByteString :: Int -> Sample -> BS.ByteString
@@ -159,10 +180,6 @@ les alcanza con hacer algo tipo GETSAMPLES $$ efecto_absoluto =$ PUTSAMPLES
 -}
 
 --sube el volumen al máximo admitido por el formato sin distorsionar.
-getVolLimit :: WavFile -> Sample
-getVolLimit wf = shiftL 1 (bitsPerSample (fmtheader wf) - 1) - 1
-
-
 setVolMax :: WavFile -> IO WavFile
 setVolMax wf = do maxv' <- getMaxVolume wf
                   let maxv = (fromIntegral maxv')::Double
@@ -174,8 +191,8 @@ setVolMax wf = do maxv' <- getMaxVolume wf
 --control de volumen relativo a un porcentaje p del volumen máximo.
 setVolRel :: Double -> WavFile -> IO WavFile
 setVolRel p wf = let f s = round $ (fromIntegral s) * p/100
-                 in getSamples wf $$ mapSamples f =$ putSamples wf
-
+                 in do newChs <- makeTemps wf
+                       safelyDo (getSamples wf $$ mapSamples f =$ putSamples wf newChs) wf newChs 
 
 
 --noise gate relativo a un porcentaje p del volumen máximo.
@@ -186,7 +203,8 @@ noiseGate p wf = do
         factor = p / 100
         limit = round $ factor * maxv
         f s = if abs s<limit then 0 else s
-    getSamples wf $$ mapSamples f =$ putSamples wf
+    newChs <- makeTemps wf
+    safelyDo (getSamples wf $$ mapSamples f =$ putSamples wf newChs) wf newChs
 
 
 
@@ -205,7 +223,8 @@ clipAbs :: Sample -> WavFile -> IO WavFile
 clipAbs v wf = let lim = abs v
                    f :: Sample -> Sample
                    f s = if abs s < lim then s else signum s*lim
-               in getSamples wf $$ mapSamples f =$ putSamples wf
+               in do newChs <- makeTemps wf
+                     safelyDo (getSamples wf $$ mapSamples f =$ putSamples wf newChs) wf newChs
 
 
 --soft clipping ("overdrive") simétrico respecto a un porcentaje p del volumen máximo, con porcentaje de sensitividad s (s=0 equivale a hard clipping, s=100 no produce cambios).
@@ -225,7 +244,8 @@ softClipAbs v s wf = let lim = abs v
                          f :: Sample -> Sample
                          f s = if abs s < lim then s else let soft = factor * (fromIntegral (abs s-lim))
                                                           in signum s * (lim + (round soft))
-                     in getSamples wf $$ mapSamples f =$ putSamples wf
+                     in do newChs <- makeTemps wf
+                           safelyDo (getSamples wf $$ mapSamples f =$ putSamples wf newChs) wf newChs
 
 
 --compresión, equilibra los volúmenes (sube los volúmenes "bajos" y baja los "altos")
@@ -251,7 +271,8 @@ compAbs :: Sample -> Double -> WavFile -> IO WavFile
 compAbs v s wf = let lim = abs v
                      factor = s/100
                      f s = signum s * ( abs s + round (fromIntegral (lim - abs s) * factor) )
-                 in getSamples wf $$ mapSamples f =$ putSamples wf
+                 in do newChs <- makeTemps wf
+                       safelyDo (getSamples wf $$ mapSamples f =$ putSamples wf newChs) wf newChs
 
 
 -- tremolo: s = Speed (período de la onda en ms), d = Depth (amplitud de la onda) controls how fast and how much the signal varies.
@@ -273,7 +294,8 @@ tremolo s d t isPanning wf =
              f :: Double -> Double -> Double
              f nc i = let offset = s'*nc/(fromIntegral nchs) --para el panning. Si isPanning=False entonces offset=0, o sea que no depende del número del canal, para todos los canales es igual.
                       in (d + (sin((i+offset)*factor)) * d) / 2 + t
-         in getSamples wf $$ tremolo_ f 0 isPanning nchs =$ putSamples wf
+         in do newChs <- makeTemps wf
+               safelyDo (getSamples wf $$ tremolo_ f 0 isPanning nchs =$ putSamples wf newChs) wf newChs
 
 tremolo_ :: (Double -> Double -> Double) -> Integer -> Bool -> Int -> Conduit [Sample] IO [Sample]
 tremolo_ f !i isPanning nchs = do
@@ -291,6 +313,7 @@ tremolo_ f !i isPanning nchs = do
                 tremolo_ f (i+1) isPanning nchs
 
 
+--TODO hacer que limpie si falla!
 -- delay: d = delay (ms), f = feedback (cantidad de veces que se repite), p = potencia o porcentaje de volumen.
 -- isEcho = True => el delay se va disminuyendo linealmente en potencia
 delay :: Double -> Int -> Double -> Bool -> WavFile -> IO WavFile
@@ -307,25 +330,30 @@ delay d f p isEcho wf =
              sampsz = div (bitsPerSample $ fmtheader wf) 8
          in do
             -- echoes = [ [ch0echo0, ch0echo1,...], [ch1echo0,ch1echo1,...], ...], o sea :: [[(FilePath,Handle)]]
-            echoes <- liftIO $ sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp") | i<-[0..f-1]] | ch<-[0..nchs-1] ]
+            -- Por cada feedback creo un archivo nuevo
+            echoes <- sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp") | i<-[0..f-1]] | ch<-[0..nchs-1] ]
 
+            -- Pongo ceros en cada archivo dependiendo del delay y del nº de feedback
             let aux es = sequence $ map (\(dx,(_,h)) -> BS.hPut h (BS.pack $ replicate (sampsz*dx) 0)) es
-            liftIO $ sequence $ map aux (map (zip delays) echoes)
+            sequence $ map aux (map (zip delays) echoes)
 
-            wf' <- getSamples wf $$ armarOndas (map (zip factores) echoes) sampsz =$ putSamples wf
-            liftIO $ sequence $ map (hClose.snd) $ concat echoes
+            newChs <- makeTemps wf
+            wf' <- safelyDo (getSamples wf $$ armarOndas (map (zip factores) echoes) sampsz =$ putSamples wf newChs) wf (newChs++(concat echoes))
+            sequence $ map (hClose.snd) $ concat echoes
             
+            -- Sumo las ondas que generé y las guardo en un mismo archivo (hago esto para cada canal)
             let originalFiles = chFiles $ dataheader wf'
                 echoFiles = map (map fst) echoes
                 todas = map (\(o,es)->(o:es)) (zip originalFiles echoFiles)
-            wffinal <- juntarOndas sampsz todas $$ putSamples wf'
+            newChs' <- makeTemps wf'
+            wffinal <- safelyDo (juntarOndas sampsz todas $$ putSamples wf' newChs') wf' (newChs'++(concat echoes))
             
-            liftIO $ sequence $ map (removeFile.fst) $ concat echoes
+            sequence $ map (removeFile.fst) $ concat echoes
             return wffinal
 
 
 armarOndas :: [[ (Double, (FilePath,Handle)) ]] -> Int -> Conduit [Sample] IO [Sample]
-armarOndas efs sampsz = do
+armarOndas efs sampsz = do  --efs :: [(factor, (path,handle))]
     mx <- await
     case mx of
         Nothing -> return ()
@@ -341,8 +369,7 @@ armarOndas efs sampsz = do
 juntarOndas :: Int -> [[FilePath]] -> Source IO [Sample]
 juntarOndas sampsz chEchos = do
     chHandless <- liftIO $ sequence $ map (\es -> sequence $ map (\path -> openBinaryFile path ReadMode) es) chEchos
-    res <- juntarOndas_ sampsz chHandless
-    return res
+    juntarOndas_ sampsz chHandless
 
 juntarOndas_ :: Int -> [[Handle]] -> Source IO [Sample]
 juntarOndas_ sampsz chHandless = 
@@ -369,7 +396,7 @@ juntarOndas_ sampsz chHandless =
 
 {-
     Por cada feedback creo un archivo nuevo con tantos ceros como tenga en delay
-    de ése, y después unirlos todos con suma, dejando la longitud del más largo.
+    de ése, y después los uno todos con suma, dejando la longitud del más largo.
     
     Después con un conduit hago yield de lo mismo que le llega, y que
     ya tenga creados los archivos con los ceros, entonces lo único que tiene que

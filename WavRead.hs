@@ -11,16 +11,26 @@ import Data.Word
 
 import System.IO
 import System.IO.Temp (openBinaryTempFile)
+import System.Directory (removeFile,doesFileExist)
 import Data.Conduit
 import Control.Monad.IO.Class (liftIO)
+
+import qualified Control.Exception as E
+import System.IO.Error
 
 import WavTypes
 
 
 readWav :: FilePath -> IO WavFile
-readWav path = do handle <- openBinaryFile path ReadMode
-                  parseHeader handle
-
+readWav path = do
+    handle <- (openBinaryFile path ReadMode) `catchIOError` catcher
+    parseHeader handle
+        where
+            catcher :: IOError -> IO Handle
+            catcher e = let msg = if isDoesNotExistError e then ". El archivo no existe."
+                                  else if isAlreadyInUseError e then ". El archivo está siendo usado."
+                                  else "."
+                        in error $ "No se pudo abrir el archivo "++(show path)++msg++"\nError: "++(show e)
 
 -- Headers --
 
@@ -44,8 +54,8 @@ parsehFMT :: Handle -> IO Hfmt
 parsehFMT h = do dfields <- recursiveGet h defaultS
                  let id = getString (dfields!!0)
                      sz = getInt (dfields!!1)
-                 if id/="fmt " then do liftIO $ hSeek h RelativeSeek (fromIntegral sz)
-                                       liftIO $ putStrLn $ "    chunk descartado de ID:"++id++"."
+                 if id/="fmt " then do hSeek h RelativeSeek (fromIntegral sz)
+                                       putStrLn $ "    chunk descartado de ID:"++id++"."
                                        parsehFMT h --descarto todos los chunks opcionales del formato WAVE.
                  else do fields <- recursiveGet h fmtS
                          let format = getInt (fields!!0)
@@ -80,8 +90,8 @@ parsehDATA h rh fh =
             fields <- recursiveGet h dataS
             let id = getString (fields!!0)
                 sz = getInt (fields!!1)
-            if id/="data" then do liftIO $ hSeek h RelativeSeek (fromIntegral sz)
-                                  liftIO $ putStrLn $ "    chunk descartado de ID:"++id++"."
+            if id/="data" then do hSeek h RelativeSeek (fromIntegral sz)
+                                  putStrLn $ "    chunk descartado de ID:"++id++"."
                                   parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
                           else do
                               chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
@@ -97,14 +107,24 @@ parseData :: Int -> Hfmt -> Handle -> IO [FilePath]
 parseData sz fh h = let sampsz = div (bitsPerSample fh) 8
                         nc = numChannels fh
                         nblocks = div sz (sampsz*nc)
+
                         makeTemps :: Int -> IO [(FilePath,Handle)]
                         makeTemps 0 = return []
-                        makeTemps n = do tmps <- makeTemps (n-1)
-                                         tmp <- openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")
-                                         return $ tmp : tmps
-                    in do chFiles <- makeTemps nc --armo los archivos de canales temporales.
-                          getSamples nc sampsz h $$ parsePerCh nblocks chFiles
-                          return $ map fst chFiles
+                        makeTemps n = E.bracketOnError
+                                      (openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")) 
+                                      (\ (path,_) -> safelyRemoveFile path )
+                                      (\ tmp -> do tmps <- makeTemps (n-1)
+                                                   return $ tmp:tmps )
+
+                        safelyRemoveFile :: FilePath -> IO ()
+                        safelyRemoveFile path = do exists <- doesFileExist path
+                                                   if exists then removeFile path else return ()
+                    in E.bracketOnError
+                       (makeTemps nc) --armo los archivos de canales temporales.
+                       (\ chFiles -> sequence $ map (safelyRemoveFile.fst) chFiles) --si algo falla mientras los estoy llenando los borro.
+                       (\ chFiles -> do getSamples nc sampsz h $$ parsePerCh nblocks chFiles
+                                        return $ map fst chFiles )
+
 
 --SOURCE
 --parsea una muestra para cada canal. Hay n canales, muestras de tamaño sampsz.
@@ -127,7 +147,7 @@ parsePerCh nblocks chFiles = do x <- await
                                 case x of
                                      Nothing -> error "No hay más samples!"
                                      Just samples -> 
-                                         if length chFiles == 0 
+                                         if null chFiles
                                          then error "No hay canales!"
                                          else do
                                              liftIO $ sequence $ map (\((_,h),smpl) -> BS.hPut h smpl) (zip chFiles samples)
@@ -163,4 +183,4 @@ getWord24le = do x <- getWord8
                  z <- getWord8
                  let z' = shiftR (shiftL ((fromIntegral z)::Int32) 24) 8 --lo corro 24 y vuelvo 8 para mantener el signo (en vez de correrlo 16 de una)
                      y' = shiftL ((fromIntegral y)::Int32) 8
-                 return $ fromIntegral (z' .|. y') .|. (fromIntegral x)
+                 return $ fromIntegral (z' .|. y') .|. (fromIntegral x) 

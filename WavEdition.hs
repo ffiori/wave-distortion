@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 module WavEdition (applyEff, Efecto(SetVolMax,SetVolRel,NoiseGate,ClipRel,ClipAbs,
                    SoftClipRel,SoftClipAbs,CompRel,CompAvg,CompAbs,Tremolo,Panning,
                    Delay,Echo)) where
@@ -49,6 +48,7 @@ toFunc (Echo d f p) = delay d f p True
 optimizarEfectos :: Efecto -> Efecto -> Maybe Efecto
 
 optimizarEfectos SetVolMax      SetVolMax       = Just SetVolMax
+optimizarEfectos (SetVolRel _)  SetVolMax       = Just SetVolMax
 optimizarEfectos (SetVolRel v1) (SetVolRel v2)  = Just $ SetVolRel (v1*v2/100)
 optimizarEfectos (NoiseGate x)  (NoiseGate y)   = Just $ NoiseGate (max x y)
 optimizarEfectos (ClipAbs a)    (ClipAbs b)     = Just $ ClipAbs (min a b)
@@ -81,19 +81,9 @@ applyEff i o es = do wf <- readWav i
                      putStrLn "Wav parseado."
 
                      let f = foldl (>=>) return (map toFunc (optimizar es))
-                     
---                     newwf' <- tremolo2 500 1 0.5 True wf
---                     newwf <- tremolo2 500 1 0.5 True newwf' --setVolMax2 newwf' --clipAbs2 32000 wf-- getSamples wf $$ putSamples wf --debug line
---                     x <- getMaxVolume2 newwf'
---                     putStrLn $ "max vol "++(show x)++" bps "++ (show $ bitsPerSample $ fmtheader wf)
-                     
                      res <- f wf
                      putStrLn "Efectos aplicados."
+
                      writeWav o res
-                     putStrLn "Wav final escrito."
+                     putStrLn "Wav final escrito :)"
                      return ()
-
-
--- | Left-to-right Kleisli composition of monads.
-kff :: Monad m => (a -> m b) -> (b -> m c) -> (a -> m c)
-kff !f !g !x = f x >>= g

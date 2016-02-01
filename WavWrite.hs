@@ -12,15 +12,35 @@ import System.Endian    -- fue necesario instalarlo con cabal install cpu
 import System.IO
 import Control.Monad.IO.Class (liftIO)
 import Data.Conduit
-import System.Directory (removeFile)
+import System.Directory (removeFile,doesFileExist)
+
+import qualified Control.Exception as E
+import System.IO.Error
 
 import WavTypes
 
 
 writeWav :: FilePath -> WavFile -> IO ()
-writeWav path wf = do handle <- openBinaryFile path WriteMode
-                      BS.hPut handle $ (BL.toStrict . runPut) (buildWavHeader wf)
-                      putWaves wf handle
+writeWav path wf = E.bracketOnError
+                   ((openBinaryFile path WriteMode) `catchIOError` catcher)
+                   (\ handle -> do borrarTemps wf
+                                   hClose handle
+                                   error "No se pudo construir el archivo de salida." )
+                   (\ handle -> do BS.hPut handle $ (BL.toStrict . runPut) (buildWavHeader wf)
+                                   putWaves wf handle )
+    where
+        catcher :: IOError -> IO Handle
+        catcher e = let msg = if isAlreadyExistsError e then ". El archivo no existe." else "."
+                    in do borrarTemps wf
+                          putStrLn $ "No se pudo crear el archivo "++(show path)++msg
+                          E.throw e
+
+        borrarTemps :: WavFile -> IO [()]
+        borrarTemps wf = sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
+
+        safelyRemoveFile :: FilePath -> IO ()
+        safelyRemoveFile path = do exists <- doesFileExist path
+                                   if exists then removeFile path else return ()
 
 buildWavHeader :: WavFile -> Put
 buildWavHeader wf = do putRIFF wf
@@ -75,17 +95,22 @@ putWaves :: WavFile -> Handle -> IO ()
 putWaves wf outHandle = let chs = chFiles $ dataheader wf
                             bps = bitsPerSample $ fmtheader wf
                             sampsz = div bps 8
+                            catcher :: [Handle] -> E.SomeException -> IO ()
+                            catcher chHandles e = do
+                                sequence $ map hClose chHandles
+                                sequence $ map safelyRemoveFile $ chs
+                                E.throw e
                         in do
                              chHandles <- sequence [ openBinaryFile c ReadMode | c<-chs ]
-                             putWaves_ sampsz chHandles $$ putBlock outHandle
-                             liftIO $ sequence $ map removeFile chs --una vez que escribí los canales en el archivo final, borro los temporales.
+                             (getBlock sampsz chHandles $$ putBlock outHandle) `E.catch` (catcher chHandles)
+                             sequence $ map removeFile chs --una vez que escribí los canales en el archivo final, borro los temporales.
                              return ()
 
 --SOURCE
 --Obtiene los samples de tamaño sampsz bytes de cada canal.
-putWaves_ :: Int -> [Handle] -> Source IO [BS.ByteString]
-putWaves_ _ [] = error "No hay canales en putWaves"
-putWaves_ sampsz chHandles = 
+getBlock :: Int -> [Handle] -> Source IO [BS.ByteString]
+getBlock _ [] = error "No hay canales en putWaves"
+getBlock sampsz chHandles = 
     let leer h = do 
             eof <- liftIO $ hIsEOF h
             if eof
@@ -96,26 +121,17 @@ putWaves_ sampsz chHandles =
         res <- liftIO $ sequence $ map leer chHandles
         case sequence res of
             Just samples -> do yield samples
-                               putWaves_ sampsz chHandles
+                               getBlock sampsz chHandles
             Nothing -> do liftIO $ sequence $ map hClose chHandles
                           return ()
 
---SINK                                         
---escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
-putBlock :: Handle -> Sink [BS.ByteString] IO ()
-putBlock handle = do
-    mx <- await
-    case mx of
-        Nothing -> liftIO $ (hFlush>>hClose) handle
-        Just samples -> do 
-            liftIO $ sequence $ map (BS.hPut handle) samples
-            putBlock handle
-            
 
 
--- función que falta de la familia putWord
+{-
+-- función que falta de la familia putWordnle
 putWord24le :: Word32 -> Put
 putWord24le xle = let xbe = toBE32 xle
                   in do putWord8 $ fromIntegral xbe
                         putWord8 $ fromIntegral (shiftR xbe 8)
                         putWord8 $ fromIntegral (shiftR xbe 16)
+-}
