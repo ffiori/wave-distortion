@@ -4,6 +4,7 @@ module Distort (setVolMax,setVolRel,noiseGate,clipRel,clipAbs,softClipRel,
                 softClipAbs,compRel,compAvg,compAbs,tremolo,delay) where
 
 import WavTypes
+import WavRead (safelyRemoveFile,makeTemps)
 
 import Data.Bits
 import Data.Word
@@ -16,18 +17,16 @@ import qualified Data.ByteString as BS
 import qualified Control.Exception as E
 import System.IO.Error
 
---Misc--------------------------------------------------------------------------
---borra un archivo si es que existe
-safelyRemoveFile :: FilePath -> IO ()
-safelyRemoveFile path = do exists <- doesFileExist path
-                           if exists then removeFile path else return ()
+import Control.Monad.Trans.Resource
+type RIO = ResourceT IO
 
+--Misc--------------------------------------------------------------------------
 --ejecuta action y si es que falla borra los temporales de wf y los que hay en newChs
-safelyDo :: IO WavFile -> WavFile -> [(FilePath,Handle)] -> IO WavFile
-safelyDo action wf newChs = action `E.catch` catcher
+safelyDo :: RIO WavFile -> WavFile -> [(FilePath,Handle)] -> IO WavFile
+safelyDo action wf newChs = (runResourceT action) `E.catch` catcher
     where 
         catcher :: E.SomeException -> IO WavFile
-        catcher e = do
+        catcher e = do --borra los canales del WavFile y los temporales en newChs
             sequence $ map (hClose.snd) newChs
             sequence $ map safelyRemoveFile $ (map fst newChs)++(chFiles $ dataheader wf)
             E.throw e
@@ -39,12 +38,12 @@ getVolLimit wf = shiftL 1 (bitsPerSample (fmtheader wf) - 1) - 1
 
 
 getMaxVolume :: WavFile -> IO Sample
-getMaxVolume wf = (getSamples wf $$ getMaxVolume_ 0) `E.catch` catcher
+getMaxVolume wf = runResourceT (getSamples wf $$ getMaxVolume_ 0) `E.catch` catcher
     where catcher :: E.SomeException -> IO Sample
           catcher e = do sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
                          E.throw e
 
-getMaxVolume_ :: Sample -> Sink [Sample] IO Sample
+getMaxVolume_ :: Sample -> Sink [Sample] RIO Sample
 getMaxVolume_ !m = do
     x <- await
     case x of
@@ -54,12 +53,12 @@ getMaxVolume_ !m = do
 
 
 getAvgVolume :: WavFile -> IO Sample
-getAvgVolume wf = (getSamples wf $$ getAvgVolume_ 0 0) `E.catch` catcher
+getAvgVolume wf = runResourceT (getSamples wf $$ getAvgVolume_ 0 0) `E.catch` catcher
     where catcher :: E.SomeException -> IO Sample
           catcher e = do sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
                          E.throw e
 
-getAvgVolume_ :: Integer -> Integer -> Sink [Sample] IO Sample
+getAvgVolume_ :: Integer -> Integer -> Sink [Sample] RIO Sample
 getAvgVolume_ !tot !cant = do
     x <- await
     case x of
@@ -70,13 +69,23 @@ getAvgVolume_ !tot !cant = do
 
 --SOURCE
 --Obtiene un sample de cada canal.
-getSamples :: WavFile -> Source IO [Sample]
+getSamples :: WavFile -> Source RIO [Sample]
 getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
+                    chFilesPaths = chFiles $ dataheader wf
+                in bracketP
+                   (sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths)
+                   (\chHandles -> do sequence $ map hClose chHandles
+                                     return ())
+                   (\chHandles -> getSamples_ sampsz chHandles)
+
+--getSamples :: WavFile -> Source IO [Sample]
+{-getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
                     chFilesPaths = chFiles $ dataheader wf
                 in do chHandles <- liftIO $ sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths
                       getSamples_ sampsz chHandles
+-}
 
-getSamples_ :: Int -> [Handle] -> Source IO [Sample]
+getSamples_ :: Int -> [Handle] -> Source RIO [Sample]
 getSamples_ sampsz chHandles = 
     let leer :: Handle -> IO (Maybe BS.ByteString)
         leer h = do 
@@ -90,17 +99,11 @@ getSamples_ sampsz chHandles =
         case sequence res of
             Just ss -> do yield $ map (fromByteStringtoSample sampsz) ss
                           getSamples_ sampsz chHandles
-            Nothing -> do liftIO $ sequence $ map hClose chHandles
-                          return ()
-
-makeTemps :: WavFile -> IO [(FilePath,Handle)]
-makeTemps wf = let nc = numChannels $ fmtheader wf
-               in sequence [ openBinaryTempFile "." ("ch"++(show i)++"_.tmp") | i<-[0..nc-1] ]
-
+            Nothing -> return ()
 
 --SINK                                         
 --escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
-putSamples :: WavFile -> [(FilePath,Handle)] -> Sink [Sample] IO WavFile
+putSamples :: WavFile -> [(FilePath,Handle)] -> Sink [Sample] RIO WavFile
 putSamples wf newChFiles = do
     mx <- await
     case mx of
@@ -152,7 +155,7 @@ fromSampletoByteString sz x =
                 else x
     in BS.pack $ reverse $ if sz==1 then loop sz (value+128) [] --si es 8 bits se almacena como unsigned!
                            else loop sz value []
-    
+
 
 fromByteStringtoSample :: Int->BS.ByteString->Sample
 fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x --reverse porque es little endian!
@@ -164,7 +167,7 @@ fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x --reverse porque e
                               in if sz==1 then (fromIntegral (head xs') - 128) else res --si es 8 bits se almacena como unsigned!
 
 
-mapSamples :: (Sample -> Sample) -> Conduit [Sample] IO [Sample]
+mapSamples :: (Sample -> Sample) -> Conduit [Sample] RIO [Sample]
 mapSamples f = do
     mx <- await
     case mx of
@@ -297,7 +300,7 @@ tremolo s d t isPanning wf =
          in do newChs <- makeTemps wf
                safelyDo (getSamples wf $$ tremolo_ f 0 isPanning nchs =$ putSamples wf newChs) wf newChs
 
-tremolo_ :: (Double -> Double -> Double) -> Integer -> Bool -> Int -> Conduit [Sample] IO [Sample]
+tremolo_ :: (Double -> Double -> Double) -> Integer -> Bool -> Int -> Conduit [Sample] RIO [Sample]
 tremolo_ f !i isPanning nchs = do
     mx <- await
     case mx of
@@ -313,7 +316,6 @@ tremolo_ f !i isPanning nchs = do
                 tremolo_ f (i+1) isPanning nchs
 
 
---TODO hacer que limpie si falla!
 -- delay: d = delay (ms), f = feedback (cantidad de veces que se repite), p = potencia o porcentaje de volumen.
 -- isEcho = True => el delay se va disminuyendo linealmente en potencia
 delay :: Double -> Int -> Double -> Bool -> WavFile -> IO WavFile
@@ -335,7 +337,7 @@ delay d f p isEcho wf =
 
             -- Pongo ceros en cada archivo dependiendo del delay y del nº de feedback
             let aux es = sequence $ map (\(dx,(_,h)) -> BS.hPut h (BS.pack $ replicate (sampsz*dx) 0)) es
-            sequence $ map aux (map (zip delays) echoes)
+            (sequence $ map aux (map (zip delays) echoes))  `E.catch` (catcher $ concat echoes)
 
             newChs <- makeTemps wf
             wf' <- safelyDo (getSamples wf $$ armarOndas (map (zip factores) echoes) sampsz =$ putSamples wf newChs) wf (newChs++(concat echoes))
@@ -350,9 +352,16 @@ delay d f p isEcho wf =
             
             sequence $ map (removeFile.fst) $ concat echoes
             return wffinal
+                    where 
+                        catcher :: [(FilePath,Handle)] -> E.SomeException -> IO [[()]]
+                        catcher echoes e = do
+                            sequence $ map (hClose.snd) echoes
+                            sequence $ map (safelyRemoveFile.fst) echoes
+                            sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
+                            E.throw e
 
 
-armarOndas :: [[ (Double, (FilePath,Handle)) ]] -> Int -> Conduit [Sample] IO [Sample]
+armarOndas :: [[ (Double, (FilePath,Handle)) ]] -> Int -> Conduit [Sample] RIO [Sample]
 armarOndas efs sampsz = do  --efs :: [(factor, (path,handle))]
     mx <- await
     case mx of
@@ -365,13 +374,14 @@ armarOndas efs sampsz = do  --efs :: [(factor, (path,handle))]
                 yield samples
                 armarOndas efs sampsz
 
-     
-juntarOndas :: Int -> [[FilePath]] -> Source IO [Sample]
-juntarOndas sampsz chEchos = do
-    chHandless <- liftIO $ sequence $ map (\es -> sequence $ map (\path -> openBinaryFile path ReadMode) es) chEchos
-    juntarOndas_ sampsz chHandless
-
-juntarOndas_ :: Int -> [[Handle]] -> Source IO [Sample]
+juntarOndas :: Int -> [[FilePath]] -> Source RIO [Sample]
+juntarOndas sampsz chEchos = bracketP
+    (sequence $ map (\es -> sequence $ map (\path -> openBinaryFile path ReadMode) es) chEchos)
+    (\chHandless -> do sequence $ map hClose (concat chHandless)
+                       return ()) --cierro los handles al terminar, aún cuando surja una excepción.
+    (\chHandless -> juntarOndas_ sampsz chHandless)
+    
+juntarOndas_ :: Int -> [[Handle]] -> Source RIO [Sample]
 juntarOndas_ sampsz chHandless = 
     let leer :: Handle -> IO (Maybe Sample)
         leer h = do 
@@ -391,8 +401,7 @@ juntarOndas_ sampsz chHandless =
         case sequence samples of
             Just ss -> do yield ss
                           juntarOndas_ sampsz chHandless
-            Nothing -> do liftIO $ sequence $ map (\hs -> sequence $ map hClose hs) chHandless
-                          return ()
+            Nothing -> return ()
 
 {-
     Por cada feedback creo un archivo nuevo con tantos ceros como tenga en delay

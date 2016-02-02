@@ -18,7 +18,7 @@ import qualified Control.Exception as E
 import System.IO.Error
 
 import WavTypes
-
+import WavRead (safelyRemoveFile)
 
 writeWav :: FilePath -> WavFile -> IO ()
 writeWav path wf = E.bracketOnError
@@ -38,9 +38,6 @@ writeWav path wf = E.bracketOnError
         borrarTemps :: WavFile -> IO [()]
         borrarTemps wf = sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
 
-        safelyRemoveFile :: FilePath -> IO ()
-        safelyRemoveFile path = do exists <- doesFileExist path
-                                   if exists then removeFile path else return ()
 
 buildWavHeader :: WavFile -> Put
 buildWavHeader wf = do putRIFF wf
@@ -125,6 +122,16 @@ getBlock sampsz chHandles =
             Nothing -> do liftIO $ sequence $ map hClose chHandles
                           return ()
 
+--SINK                                         
+--escribe un sample de cada canal, o sea que conforma un bloque en el archivo.
+putBlock :: Handle -> Sink [BS.ByteString] IO ()
+putBlock handle = do
+    mx <- await
+    case mx of
+        Nothing -> liftIO $ (hFlush>>hClose) handle
+        Just samples -> do 
+            liftIO $ sequence $ map (BS.hPut handle) samples
+            putBlock handle
 
 
 {-

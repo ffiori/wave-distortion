@@ -1,4 +1,4 @@
-module WavRead (readWav) where
+module WavRead (readWav,safelyRemoveFile,makeTemps) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -107,21 +107,10 @@ parseData :: Int -> Hfmt -> Handle -> IO [FilePath]
 parseData sz fh h = let sampsz = div (bitsPerSample fh) 8
                         nc = numChannels fh
                         nblocks = div sz (sampsz*nc)
-
-                        makeTemps :: Int -> IO [(FilePath,Handle)]
-                        makeTemps 0 = return []
-                        makeTemps n = E.bracketOnError
-                                      (openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")) 
-                                      (\ (path,_) -> safelyRemoveFile path )
-                                      (\ tmp -> do tmps <- makeTemps (n-1)
-                                                   return $ tmp:tmps )
-
-                        safelyRemoveFile :: FilePath -> IO ()
-                        safelyRemoveFile path = do exists <- doesFileExist path
-                                                   if exists then removeFile path else return ()
+                        wf = W { fmtheader = fh, dataheader=undefined, riffheader=undefined }
                     in E.bracketOnError
-                       (makeTemps nc) --armo los archivos de canales temporales.
-                       (\ chFiles -> sequence $ map (safelyRemoveFile.fst) chFiles) --si algo falla mientras los estoy llenando los borro.
+                       (makeTemps wf) --armo los archivos de canales temporales.
+                       (\ chFiles -> sequence $ map (hClose.snd>>safelyRemoveFile.fst) chFiles) --si algo falla mientras los estoy llenando los borro.
                        (\ chFiles -> do getSamples nc sampsz h $$ parsePerCh nblocks chFiles
                                         return $ map fst chFiles )
 
@@ -183,4 +172,32 @@ getWord24le = do x <- getWord8
                  z <- getWord8
                  let z' = shiftR (shiftL ((fromIntegral z)::Int32) 24) 8 --lo corro 24 y vuelvo 8 para mantener el signo (en vez de correrlo 16 de una)
                      y' = shiftL ((fromIntegral y)::Int32) 8
-                 return $ fromIntegral (z' .|. y') .|. (fromIntegral x) 
+                 return $ fromIntegral (z' .|. y') .|. (fromIntegral x)
+
+
+{-
+-- versión no segura
+makeTemps :: WavFile -> IO [(FilePath,Handle)]
+makeTemps wf = let nc = numChannels $ fmtheader wf
+               in sequence [ openBinaryTempFile "." ("ch"++(show i)++"_.tmp") | i<-[0..nc-1] ]
+-}
+
+-- genera nuevos temporales para tantos canales como tenga wf.
+makeTemps :: WavFile -> IO [(FilePath,Handle)]
+makeTemps wf = let nc = numChannels $ fmtheader wf
+                   
+                   makeTemps' :: Int -> IO [(FilePath,Handle)]
+                   makeTemps' 0 = return []
+                   makeTemps' n = E.bracketOnError
+                                  (openBinaryTempFile "." ("ch"++(show (nc-n))++"_.tmp")) 
+                                  (\ (path,_) -> do safelyRemoveFile path
+                                                    sequence $ map safelyRemoveFile (chFiles $ dataheader wf) )
+                                  (\ tmp -> do tmps <- makeTemps' (n-1)
+                                               return $ tmp:tmps )
+               in makeTemps' nc
+
+--borra un archivo si es que existe
+safelyRemoveFile :: FilePath -> IO ()
+safelyRemoveFile path = removeFile path `catchIOError` catcher
+    where catcher :: IOError -> IO ()
+          catcher e = if isDoesNotExistError e then return () else E.throw e
