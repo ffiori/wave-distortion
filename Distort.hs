@@ -1,12 +1,14 @@
 {-# LANGUAGE BangPatterns #-}
 
-module Distort (setVolMax,setVolRel,noiseGate,clipRel,clipAbs,softClipRel,
-                softClipAbs,compRel,compAvg,compAbs,tremolo,delay) where
+module Distort --(setVolMax,setVolRel,noiseGate,clipRel,clipAbs,softClipRel,
+                --softClipAbs,compRel,compAvg,compAbs,tremolo,delay) 
+                where
 
 import WavTypes
 import WavRead (safelyRemoveFile,makeTemps)
 
 import Data.Bits
+import Data.Int
 import Data.Word
 import Data.Conduit
 import System.IO
@@ -160,12 +162,11 @@ fromSampletoByteString sz x =
 
 fromByteStringtoSample :: Int->BS.ByteString->Sample
 fromByteStringtoSample sz x = let xs' = reverse $ BS.unpack x --reverse porque es little endian!
-                                  loop :: [Word8] -> Int -> Sample
-                                  loop [] n = n 
+                                  loop :: [Word8] -> Int32 -> Sample
+                                  loop [] n = fromIntegral $ shiftR (shiftL n gap) gap --shifteo para mantener el signo
                                   loop (x:xs) n = loop xs $ (shiftL n 8) .|. ((fromIntegral x) .&. 255) --hago & 255 para que me deje solamente los últimos 8 bits (si x es negativo me rellena con unos los primeros 24 bits)
-                                  gap = (4-sz)*8 --bits que sobran a la izquierda del número. Ojo: Se asume Sample=Int de 32 bits.
-                                  res = shiftR (shiftL (loop xs' 0) gap) gap --shifteo para mantener el signo
-                              in if sz==1 then (fromIntegral (head xs') - 128) else res --si es 8 bits se almacena como unsigned!
+                                  gap = (4-sz)*8 --bits que sobran a la izquierda del número. Ojo: Se asume Int32 de 32 bits.
+                              in if sz==1 then (fromIntegral (head xs') - 128) else loop xs' 0 --si es 8 bits se almacena como unsigned!
 
 
 mapSamples :: (Sample -> Sample) -> Conduit [Sample] RIO [Sample]
