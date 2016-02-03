@@ -11,9 +11,9 @@ config = [ --NoiseGate 2
           --,Tremolo 510 1 0.5
           --,Panning 510 1 0.5
           --Delay 1000 2 100
-         -- Echo 1000 2 70
+          Echo 1000 2 70
           --SetVolRel 50
-          SetVolMax
+          ,SetVolMax
           
          ]
          

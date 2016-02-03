@@ -3,12 +3,9 @@ module WavWrite (writeWav) where
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 
-import Data.Int
-import Data.Char
-import Data.Bits
+import Data.Char (ord)
 import Data.Binary.Put
 import Data.Word
-import System.Endian    -- fue necesario instalarlo con cabal install cpu
 import System.IO
 import Control.Monad.IO.Class (liftIO)
 import Data.Conduit
@@ -25,7 +22,7 @@ writeWav path wf = E.bracketOnError
                    ((openBinaryFile path WriteMode) `catchIOError` catcher)
                    (\ handle -> do borrarTemps wf
                                    hClose handle
-                                   error "No se pudo construir el archivo de salida." )
+                                   error $ "No se pudo construir el archivo de salida "++(show path) )
                    (\ handle -> do BS.hPut handle $ (BL.toStrict . runPut) (buildWavHeader wf)
                                    putWaves wf handle )
     where

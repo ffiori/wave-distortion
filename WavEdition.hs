@@ -8,7 +8,6 @@ import WavWrite
 import Distort
 
 import Control.Monad.State ((>=>))
-import Data.Conduit
 
 data Efecto = SetVolMax
              | SetVolRel Double

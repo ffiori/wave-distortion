@@ -178,7 +178,7 @@ mapSamples f = do
 --------------------------------------------------------------------------------
 
 {-
-Los efectos que usan valores absoluto no necesitan ni siquiera usar un sink aparte antes,
+Los efectos que usan valores absolutos no necesitan ni siquiera usar un sink aparte antes,
 les alcanza con hacer algo tipo GETSAMPLES $$ efecto_absoluto =$ PUTSAMPLES
 -}
 
@@ -322,18 +322,35 @@ delay :: Double -> Int -> Double -> Bool -> WavFile -> IO WavFile
 delay d f p isEcho wf = 
     if d<0 || f<0 || p<0
     then error $ "Parámetro negativo en Delay o Echo." -- Todos los argumentos deben ser positivos.
-    else let srate = fromIntegral $ sampleRate $ fmtheader $ wf
-             ms = 1000/(fromIntegral srate) --ms per sample
-             d' = round $ d/ms --d' samples equivalen a d milisegundos.
-             delays = [ d' * i | i<-[f,f-1..1] ]
-             factores = if isEcho then let f_ = fromIntegral f in [ p*i / (100*(f_+1)) | i<-[1..f_] ]
-                                  else replicate f (p/100)
-             nchs = numChannels $ fmtheader wf
-             sampsz = div (bitsPerSample $ fmtheader wf) 8
+    else let 
+            srate = fromIntegral $ sampleRate $ fmtheader $ wf
+            ms = 1000/(fromIntegral srate) --ms per sample
+            d' = round $ d/ms --d' samples equivalen a d milisegundos.
+            delays = [ d' * i | i<-[f,f-1..1] ]
+            factores = if isEcho then let f_ = fromIntegral f in [ p*i / (100*(f_+1)) | i<-[1..f_] ]
+                                 else replicate f (p/100)
+            nchs = numChannels $ fmtheader wf
+            sampsz = div (bitsPerSample $ fmtheader wf) 8
+
+            makeChsEch :: Int -> Int -> [[(FilePath,Handle)]] -> IO [[(FilePath,Handle)]]
+            makeChsEch 0  _ acum = return acum
+            makeChsEch ch n acum = E.bracketOnError
+                                   (makeEchoes (ch-1) (n-1))
+                                   (\ es -> sequence $ map (safelyRemoveFile.fst) (concat (es:acum)))
+                                   (\ es -> makeChsEch (ch-1) n (es:acum))
+
+            makeEchoes :: Int -> Int -> IO [(FilePath,Handle)]
+            makeEchoes ch (-1) = return []
+            makeEchoes ch i = E.bracketOnError
+                              (openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp")) 
+                              (\ (path,_) -> sequence $ map safelyRemoveFile (path : (chFiles $ dataheader wf)) )
+                              (\ tmp -> do tmps <- makeEchoes ch (i-1)
+                                           return $ tmp:tmps )
+             
          in do
             -- echoes = [ [ch0echo0, ch0echo1,...], [ch1echo0,ch1echo1,...], ...], o sea :: [[(FilePath,Handle)]]
-            -- Por cada feedback creo un archivo nuevo
-            echoes <- sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp") | i<-[0..f-1]] | ch<-[0..nchs-1] ]
+            -- Por cada feedback creo un archivo nuevo. TODO hacer safe!
+            echoes <- makeChsEch nchs f [] --sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp") | i<-[0..f-1]] | ch<-[0..nchs-1] ]
 
             -- Pongo ceros en cada archivo dependiendo del delay y del nº de feedback
             let aux es = sequence $ map (\(dx,(_,h)) -> BS.hPut h (BS.pack $ replicate (sampsz*dx) 0)) es
@@ -352,13 +369,13 @@ delay d f p isEcho wf =
             
             sequence $ map (removeFile.fst) $ concat echoes
             return wffinal
-                    where 
-                        catcher :: [(FilePath,Handle)] -> E.SomeException -> IO [[()]]
-                        catcher echoes e = do
-                            sequence $ map (hClose.snd) echoes
-                            sequence $ map (safelyRemoveFile.fst) echoes
-                            sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
-                            E.throw e
+    where 
+        catcher :: [(FilePath,Handle)] -> E.SomeException -> IO [[()]]
+        catcher echoes e = do
+            sequence $ map (hClose.snd) echoes
+            sequence $ map (safelyRemoveFile.fst) echoes
+            sequence $ map safelyRemoveFile (chFiles $ dataheader wf)
+            E.throw e
 
 
 armarOndas :: [[ (Double, (FilePath,Handle)) ]] -> Int -> Conduit [Sample] RIO [Sample]

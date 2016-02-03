@@ -4,7 +4,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 
 import Data.Int
-import Data.Char
+import Data.Char (chr)
 import Data.Bits
 import Data.Binary.Get
 import Data.Word
