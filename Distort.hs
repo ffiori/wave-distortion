@@ -150,11 +150,12 @@ fromSampletoByteString sz x =
         loop n x ws = loop (n-1) (shiftR x 8) (((fromIntegral x)::Word8):ws)
         maxlim = shiftL 1 (sz*8-1) - 1
         minlim = -maxlim - 1
-        value = if x>maxlim then maxlim      --si el sample tiene un valor por fuera de los límites de la representación, se trunca.
-                else if x<minlim then minlim
-                else x
-    in BS.pack $ reverse $ if sz==1 then loop sz (value+128) [] --si es 8 bits se almacena como unsigned!
-                           else loop sz value []
+        value = if x>maxlim 
+                    then maxlim      --si el sample tiene un valor por fuera de los límites de la representación, se trunca.
+                    else if x<minlim then minlim else x
+    in BS.pack $ reverse $ if sz==1 
+                                then loop sz (value+128) [] --si es 8 bits se almacena como unsigned!
+                                else loop sz value []
 
 
 fromByteStringtoSample :: Int->BS.ByteString->Sample
@@ -285,7 +286,7 @@ compAbs v s wf = let lim = abs v
 -- isPanning = True => el sonido va pasando de un canal a otro en potencia.
 tremolo :: Double -> Double -> Double -> Bool -> WavFile -> IO WavFile
 tremolo s d t isPanning wf = 
-    if s<0 || d<0 || t<0
+  if s<0 || d<0 || t<0
     then error $ "Parámetro negativo en Tremolo o Panning." -- Todos los argumentos deben ser positivos.
     else let chFilePaths = chFiles $ dataheader wf
              srate = fromIntegral $ sampleRate $ fmtheader $ wf
@@ -320,7 +321,7 @@ tremolo_ f !i isPanning nchs = do
 -- isEcho = True => el delay se va disminuyendo linealmente en potencia
 delay :: Double -> Int -> Double -> Bool -> WavFile -> IO WavFile
 delay d f p isEcho wf = 
-    if d<0 || f<0 || p<0
+  if d<0 || f<0 || p<0
     then error $ "Parámetro negativo en Delay o Echo." -- Todos los argumentos deben ser positivos.
     else let 
             srate = fromIntegral $ sampleRate $ fmtheader $ wf

@@ -54,26 +54,29 @@ parsehFMT :: Handle -> IO Hfmt
 parsehFMT h = do dfields <- recursiveGet h defaultS
                  let id = getString (dfields!!0)
                      sz = getInt (dfields!!1)
-                 if id/="fmt " then do hSeek h RelativeSeek (fromIntegral sz)
-                                       putStrLn $ "    chunk descartado de ID:"++id++"."
-                                       parsehFMT h --descarto todos los chunks opcionales del formato WAVE.
-                 else do fields <- recursiveGet h fmtS
-                         let format = getInt (fields!!0)
-                         fieldsExt <- if format == -2 then recursiveGet h fmtExtS else return []
-                         return HF { subchunk1ID   = id
-                                   , subchunk1Size = sz
-                                   , audioFormat   = format
-                                   , numChannels   = getInt (fields!!1)
-                                   , sampleRate    = getInt (fields!!2)
-                                   , byteRate      = getInt (fields!!3)
-                                   , blockAlign    = getInt (fields!!4)
-                                   , bitsPerSample = getInt (fields!!5)
-                                   , cbSize = if format == -2 then Just (getInt (fieldsExt!!0)) else Nothing
-                                   , validBitsPerSample = if format == -2 then Just (getInt (fieldsExt!!1)) else Nothing
-                                   , chMask = if format == -2 then Just (getInt (fieldsExt!!2)) else Nothing
-                                   , subFormat = if format == -2 then Just (getInt (fieldsExt!!3)) else Nothing
-                                   , check = if format == -2 then Just (getString (fieldsExt!!4)) else Nothing
-                                   }
+                 if id/="fmt " 
+                    then do
+                        hSeek h RelativeSeek (fromIntegral sz)
+                        putStrLn $ "    chunk descartado de ID:"++id++"."
+                        parsehFMT h --descarto todos los chunks opcionales del formato WAVE.
+                    else do 
+                        fields <- recursiveGet h fmtS
+                        let format = getInt (fields!!0)
+                        fieldsExt <- if format == -2 then recursiveGet h fmtExtS else return []
+                        return HF { subchunk1ID   = id
+                                  , subchunk1Size = sz
+                                  , audioFormat   = format
+                                  , numChannels   = getInt (fields!!1)
+                                  , sampleRate    = getInt (fields!!2)
+                                  , byteRate      = getInt (fields!!3)
+                                  , blockAlign    = getInt (fields!!4)
+                                  , bitsPerSample = getInt (fields!!5)
+                                  , cbSize = if format == -2 then Just (getInt (fieldsExt!!0)) else Nothing
+                                  , validBitsPerSample = if format == -2 then Just (getInt (fieldsExt!!1)) else Nothing
+                                  , chMask = if format == -2 then Just (getInt (fieldsExt!!2)) else Nothing
+                                  , subFormat = if format == -2 then Just (getInt (fieldsExt!!3)) else Nothing
+                                  , check = if format == -2 then Just (getString (fieldsExt!!4)) else Nothing
+                                  }
 
 parsehDATA :: Handle -> HRIFF -> Hfmt -> IO Hdata
 parsehDATA h rh fh = 
@@ -83,22 +86,23 @@ parsehDATA h rh fh =
                        Nothing -> 1
     in
         if format > 1 || (format == -2 && format2 > 1)
-        then error $ "Archivo comprimido o de punto flotante no soportado por el programa. Formato de compresión "++(show $ audioFormat fh)
-        else if bitsPerSample fh > 32 || mod (bitsPerSample fh) 8 /= 0
-        then error $ "Profundidad de muestras no soportada por el programa. Sólo se admiten muestras de 8, 16, 24 y 32 bits. BitsPerSample "++(show $ bitsPerSample fh)
-        else do
-            fields <- recursiveGet h dataS
-            let id = getString (fields!!0)
-                sz = getInt (fields!!1)
-            if id/="data" then do hSeek h RelativeSeek (fromIntegral sz)
-                                  putStrLn $ "    chunk descartado de ID:"++id++"."
-                                  parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
-                          else do
-                              chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
-                              return HD { chunk2ID   = id 
-                                        , chunk2Size = sz
-                                        , chFiles = chFilePaths
-                                        }
+            then error $ "Archivo comprimido o de punto flotante no soportado por el programa. Formato de compresión "++(show $ audioFormat fh)
+            else if bitsPerSample fh > 32 || mod (bitsPerSample fh) 8 /= 0
+                    then error $ "Profundidad de muestras no soportada por el programa. Sólo se admiten muestras de 8, 16, 24 y 32 bits. BitsPerSample "++(show $ bitsPerSample fh)
+                    else do
+                        fields <- recursiveGet h dataS
+                        let id = getString (fields!!0)
+                            sz = getInt (fields!!1)
+                        if id/="data"
+                            then do hSeek h RelativeSeek (fromIntegral sz)
+                                    putStrLn $ "    chunk descartado de ID:"++id++"."
+                                    parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
+                            else do
+                                chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
+                                return HD { chunk2ID   = id 
+                                          , chunk2Size = sz
+                                          , chFiles = chFilePaths
+                                          }
 
 
 -- Data --
@@ -137,10 +141,10 @@ parsePerCh nblocks chFiles = do x <- await
                                      Nothing -> error "No hay más samples!"
                                      Just samples -> 
                                          if null chFiles
-                                         then error "No hay canales!"
-                                         else do
-                                             liftIO $ sequence $ map (\((_,h),smpl) -> BS.hPut h smpl) (zip chFiles samples)
-                                             parsePerCh (nblocks-1) chFiles
+                                             then error "No hay canales!"
+                                             else do
+                                                 liftIO $ sequence $ map (\((_,h),smpl) -> BS.hPut h smpl) (zip chFiles samples)
+                                                 parsePerCh (nblocks-1) chFiles
 
 
 -- Utilidades --

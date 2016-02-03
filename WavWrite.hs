@@ -57,27 +57,28 @@ putfmt wf = let fc = fmtheader wf
                   putWord32le . fromIntegral $ byteRate fc
                   putWord16le . fromIntegral $ blockAlign fc
                   putWord16le . fromIntegral $ bitsPerSample fc
-                  if audioFormat fc /= -2 then return ()
-                  else let cbSize'    = case cbSize fc of
-                                            Just x -> x
-                                            Nothing -> error "Format header dañado en cbSize."
-                           validBitsPerSample' = case validBitsPerSample fc of
-                                                    Just x -> x
-                                                    Nothing -> error "Format header dañado en validBitsPerSample."
-                           chMask'    = case chMask fc of
-                                            Just x -> x
-                                            Nothing -> error "Format header dañado en chMask."
-                           subFormat' = case subFormat fc of
-                                            Just x -> x
-                                            Nothing -> error "Format header dañado en subFormat."
-                           check'     = case check fc of
-                                            Just x -> x
-                                            Nothing -> error "Format header dañado en check."
-                       in do putWord16le . fromIntegral $ cbSize'
-                             putWord16le . fromIntegral $ validBitsPerSample'
-                             putWord32le . fromIntegral $ chMask'
-                             putWord16le . fromIntegral $ subFormat'
-                             putByteString . BS.pack $ map (fromIntegral.ord) $ check'
+                  if audioFormat fc /= -2
+                      then return ()
+                      else let cbSize'    = case cbSize fc of
+                                                Just x -> x
+                                                Nothing -> error "Format header dañado en cbSize."
+                               validBitsPerSample' = case validBitsPerSample fc of
+                                                        Just x -> x
+                                                        Nothing -> error "Format header dañado en validBitsPerSample."
+                               chMask'    = case chMask fc of
+                                                Just x -> x
+                                                Nothing -> error "Format header dañado en chMask."
+                               subFormat' = case subFormat fc of
+                                                Just x -> x
+                                                Nothing -> error "Format header dañado en subFormat."
+                               check'     = case check fc of
+                                                Just x -> x
+                                                Nothing -> error "Format header dañado en check."
+                           in do putWord16le . fromIntegral $ cbSize'
+                                 putWord16le . fromIntegral $ validBitsPerSample'
+                                 putWord32le . fromIntegral $ chMask'
+                                 putWord16le . fromIntegral $ subFormat'
+                                 putByteString . BS.pack $ map (fromIntegral.ord) $ check'
                       
 
 putdata :: WavFile -> Put
