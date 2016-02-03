@@ -332,6 +332,7 @@ delay d f p isEcho wf =
             nchs = numChannels $ fmtheader wf
             sampsz = div (bitsPerSample $ fmtheader wf) 8
 
+            --versión segura para crear los temporales de echoes
             makeChsEch :: Int -> Int -> [[(FilePath,Handle)]] -> IO [[(FilePath,Handle)]]
             makeChsEch 0  _ acum = return acum
             makeChsEch ch n acum = E.bracketOnError
@@ -349,7 +350,7 @@ delay d f p isEcho wf =
              
          in do
             -- echoes = [ [ch0echo0, ch0echo1,...], [ch1echo0,ch1echo1,...], ...], o sea :: [[(FilePath,Handle)]]
-            -- Por cada feedback creo un archivo nuevo. TODO hacer safe!
+            -- Por cada feedback creo un archivo nuevo.
             echoes <- makeChsEch nchs f [] --sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp") | i<-[0..f-1]] | ch<-[0..nchs-1] ]
 
             -- Pongo ceros en cada archivo dependiendo del delay y del nº de feedback
