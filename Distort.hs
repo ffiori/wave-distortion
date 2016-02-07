@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 
-module Distort --(setVolMax,setVolRel,noiseGate,clipRel,clipAbs,softClipRel,
-                --softClipAbs,compRel,compAvg,compAbs,tremolo,delay) 
+module Distort (setVolMax,setVolRel,noiseGate,clipRel,clipAbs,softClipRel,
+                softClipAbs,compRel,compAvg,compAbs,tremolo,delay) 
                 where
 
 import WavTypes
@@ -79,13 +79,6 @@ getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
                    (\chHandles -> do sequence $ map hClose chHandles
                                      return ())
                    (\chHandles -> getSamples_ sampsz chHandles)
-
---getSamples :: WavFile -> Source IO [Sample]
-{-getSamples wf = let sampsz = div (bitsPerSample $ fmtheader wf) 8
-                    chFilesPaths = chFiles $ dataheader wf
-                in do chHandles <- liftIO $ sequence $ map (\path -> openBinaryFile path ReadMode) chFilesPaths
-                      getSamples_ sampsz chHandles
--}
 
 getSamples_ :: Int -> [Handle] -> Source RIO [Sample]
 getSamples_ sampsz chHandles = 
@@ -282,7 +275,7 @@ compAbs v s wf = let lim = abs v
 
 -- tremolo: s = Speed (período de la onda en ms), d = Depth (amplitud de la onda) controls how fast and how much the signal varies.
 -- Threshold (t) es el menor factor que se usa en la conversión (en 0 deja una onda senoidal con menor valor 0, o sea que el volumen disminuirá a 0 en algunos momentos).
--- Hace que el volumen varíe con forma de onda senoidal. Para eso hago una lista infinita de valores de una onda senoidal corrida para que sean positivos.
+-- Hace que el volumen varíe con forma de onda senoidal. Para eso tomo valores de una onda senoidal corrida para que sean positivos.
 -- Precaución: puede aumentar o disminuir demasiado el volumen. Si se mete un SetVolMax después sirve bastante.
 -- isPanning = True => el sonido va pasando de un canal a otro en potencia.
 tremolo :: Double -> Double -> Double -> Bool -> WavFile -> IO WavFile
@@ -329,7 +322,7 @@ delay d f p isEcho wf =
             ms = 1000/(fromIntegral srate) --ms per sample
             d' = round $ d/ms --d' samples equivalen a d milisegundos.
             delays = [ d' * i | i<-[f,f-1..1] ]
-            factores = if isEcho then let f_ = fromIntegral f in [ p*i / (100*(f_+1)) | i<-[1..f_] ]
+            factores = if isEcho then let f_ = fromIntegral f in [ p*i / (100*f_) | i<-[1..f_] ]
                                  else replicate f (p/100)
             nchs = numChannels $ fmtheader wf
             sampsz = div (bitsPerSample $ fmtheader wf) 8
@@ -356,7 +349,7 @@ delay d f p isEcho wf =
             echoes <- makeChsEch nchs f [] --sequence $ [ sequence [openBinaryTempFile "." ("ch"++(show ch)++"echo"++(show i)++"_.tmp") | i<-[0..f-1]] | ch<-[0..nchs-1] ]
 
             -- Pongo ceros en cada archivo dependiendo del delay y del nº de feedback
-            let aux es = sequence $ map (\(dx,(_,h)) -> BS.hPut h (BS.pack $ replicate (sampsz*dx) 0)) es
+            let aux es = sequence $ map (\(dx,(_,h)) -> BS.hPut h (BS.concat $ replicate dx (fromSampletoByteString sampsz 0))) es
             (sequence $ map aux (map (zip delays) echoes))  `E.catch` (catcher $ concat echoes)
 
             newChs <- makeTemps wf
