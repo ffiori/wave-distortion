@@ -1,15 +1,3 @@
--- Formato WAV general
--- http://web.archive.org/web/20141213140451/https://ccrma.stanford.edu/courses/422/projects/WaveFormat/
-
--- Explicados algunos detalles
--- http://web.archive.org/web/19991115123323/http://www.borg.com/~jglatt/tech/wave.htm
-
--- buena documentación y ejemplos
--- http://www-mmsp.ece.mcgill.ca/documents/audioformats/wave/wave.html
-
--- ejemplos variados
--- http://download.wavetlan.com/SVV/Media/HTTP/http-wav.htm
-
 {-
     En el programa se usará la versión canónica del formato WAVE,
     es decir, que sólo se divide en tres partes (RIFF, fmt, data).
@@ -18,12 +6,14 @@
 
 module WavTypes where
 
+import Data.Int
+
 data WavFile = W { riffheader :: HRIFF
                  , fmtheader :: Hfmt
                  , dataheader :: Hdata
                  }
 
-type Sample = Int
+type Sample = Int32
 
 
 -- Headers --

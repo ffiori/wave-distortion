@@ -160,7 +160,7 @@ recursiveGet h hS = do field <- BS.hGet h (head hS)
 --parsea un signed Int de 32bits en little-endian.
 getInt :: BS.ByteString -> Int
 getInt le = case BS.length le of
-                1 -> fromIntegral (runGet getWord8 (BL.fromStrict le)) - 128                     --el estándar dice que muestras de 8bits son unsigned. De todos modos las paso a signed con el -128.
+                1 -> fromIntegral (runGet getWord8 (BL.fromStrict le)) - 128                    --el estándar dice que muestras de 8bits son unsigned. De todos modos las paso a signed con el -128.
                 2 -> fromIntegral (fromIntegral (runGet getWord16le (BL.fromStrict le))::Int16) --primero parseo como Int16 y después como Int para preservar el signo.
                 3 -> fromIntegral $ runGet getWord24le (BL.fromStrict le)                       --getWord24le devuelve signed.
                 4 -> fromIntegral $ runGet getWord32le (BL.fromStrict le)

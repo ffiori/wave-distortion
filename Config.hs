@@ -12,7 +12,7 @@ config = [
           --, CompAvg 70
           --Tremolo 500 1 0.5
           --,Panning 500 1 0.5
-          Delay 3000 4 100
+          Echo 6000 0 66
           --Delay 1000 4 100
          -- SetVolMax
           
