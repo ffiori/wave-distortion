@@ -7,14 +7,14 @@ config = [
 
 ---------- Editar desde aquí...
 
-           --NoiseGate 1
+           --NoiseGate 3
           --, SoftClipRel 15 5
           --, CompAvg 70
           --Tremolo 500 1 0.5
-          --,Panning 500 1 0.5
-          Echo 6000 0 66
+          --Panning 500 1 0.5
+          --,Echo 30 9 90
           --Delay 1000 4 100
-         -- SetVolMax
+          SetVolMax
           
 ---------- ...hasta aquí.
 

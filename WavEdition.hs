@@ -1,6 +1,4 @@
-module WavEdition (applyEff, Efecto(SetVolMax,SetVolRel,NoiseGate,ClipRel,ClipAbs,
-                   SoftClipRel,SoftClipAbs,CompRel,CompAvg,CompAbs,Tremolo,Panning,
-                   Delay,Echo)) where
+module WavEdition (applyEff, Efecto(..)) where
 
 import WavTypes
 import WavRead
