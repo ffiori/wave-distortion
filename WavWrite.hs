@@ -20,13 +20,13 @@ import System.IO.Error
 
 writeWav :: FilePath -> WavFile -> IO ()
 writeWav path wf = 
-    E.bracketOnError
-    ((openBinaryFile path WriteMode) `catchIOError` catcher)
-    (\ handle -> do borrarTemps wf
-                    hClose handle
-                    error $ "No se pudo construir el archivo de salida "++(show path) )
-    (\ handle -> do BS.hPut handle $ (BL.toStrict . runPut) (buildWavHeader wf)
-                    putWaves wf handle )
+  E.bracketOnError
+  ((openBinaryFile path WriteMode) `catchIOError` catcher)
+  (\ handle -> do borrarTemps wf
+                  hClose handle
+                  error $ "No se pudo construir el archivo de salida "++(show path) )
+  (\ handle -> do (BS.hPut handle $ (BL.toStrict . runPut) (buildWavHeader wf)) `E.catch` (\e -> putStrLn (show e) >> E.throw (e::E.SomeException))
+                  (putWaves wf handle) `E.catch` (\e -> putStrLn (show e) >> E.throw (e::E.SomeException)) )
   where
     catcher :: IOError -> IO Handle
     catcher e = let msg = if isAlreadyExistsError e then ". El archivo no existe." else "."
@@ -51,38 +51,41 @@ putRIFF wf = let rc = riffheader wf
 
 putfmt :: WavFile -> Put
 putfmt wf = 
-    let fc = fmtheader wf
-    in do putByteString . BS.pack $ map (fromIntegral.ord) $ subchunk1ID fc
-          putWord32le . fromIntegral $ subchunk1Size fc
-          putWord16le . fromIntegral $ audioFormat fc
-          putWord16le . fromIntegral $ numChannels fc
-          putWord32le . fromIntegral $ sampleRate fc
-          putWord32le . fromIntegral $ byteRate fc
-          putWord16le . fromIntegral $ blockAlign fc
-          putWord16le . fromIntegral $ bitsPerSample fc
-          if audioFormat fc /= -2
-              then return ()
-              else let cbSize'    = case cbSize fc of
-                                        Just x -> x
-                                        Nothing -> error "Format header dañado en cbSize."
-                       validBitsPerSample' = case validBitsPerSample fc of
-                                                Just x -> x
-                                                Nothing -> error "Format header dañado en validBitsPerSample."
-                       chMask'    = case chMask fc of
-                                        Just x -> x
-                                        Nothing -> error "Format header dañado en chMask."
-                       subFormat' = case subFormat fc of
-                                        Just x -> x
-                                        Nothing -> error "Format header dañado en subFormat."
-                       check'     = case check fc of
-                                        Just x -> x
-                                        Nothing -> error "Format header dañado en check."
-                   in do putWord16le . fromIntegral $ cbSize'
-                         putWord16le . fromIntegral $ validBitsPerSample'
-                         putWord32le . fromIntegral $ chMask'
-                         putWord16le . fromIntegral $ subFormat'
-                         putByteString . BS.pack $ map (fromIntegral.ord) $ check'
-                      
+  let fc = fmtheader wf
+  in do putByteString . BS.pack $ map (fromIntegral.ord) $ subchunk1ID fc
+        putWord32le . fromIntegral $ subchunk1Size fc
+        putWord16le . fromIntegral $ audioFormat fc
+        putWord16le . fromIntegral $ numChannels fc
+        putWord32le . fromIntegral $ sampleRate fc
+        putWord32le . fromIntegral $ byteRate fc
+        putWord16le . fromIntegral $ blockAlign fc
+        putWord16le . fromIntegral $ bitsPerSample fc
+        if audioFormat fc /= wave_format_extended
+            then case cbSize fc of -- caso en que cbSize existe en un formato que no es el extendido.
+                   Just 0 -> putWord16le . fromIntegral $ 0
+                   Nothing -> return ()
+                   Just x -> error $ "cbSize="++(show x)++" cuando debería ser 0 por no estar en WAVE_FORMAT_EXTENDED."
+            else let cbSize'    = case cbSize fc of
+                                      Just x -> x
+                                      Nothing -> error "Format header dañado en cbSize."
+                     validBitsPerSample' = case validBitsPerSample fc of
+                                              Just x -> x
+                                              Nothing -> error "Format header dañado en validBitsPerSample."
+                     chMask'    = case chMask fc of
+                                      Just x -> x
+                                      Nothing -> error "Format header dañado en chMask."
+                     subFormat' = case subFormat fc of
+                                      Just x -> x
+                                      Nothing -> error "Format header dañado en subFormat."
+                     check'     = case check fc of
+                                      Just x -> x
+                                      Nothing -> error "Format header dañado en check."
+                 in do putWord16le . fromIntegral $ cbSize'
+                       putWord16le . fromIntegral $ validBitsPerSample'
+                       putWord32le . fromIntegral $ chMask'
+                       putWord16le . fromIntegral $ subFormat'
+                       putByteString . BS.pack $ map (fromIntegral.ord) $ check'
+                 
 
 putdata :: WavFile -> Put
 putdata wf = let dc = dataheader wf

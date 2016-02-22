@@ -75,3 +75,6 @@ fmtExtS = [2,2,4,2,14]
 
 defaultS :: [Int] --tamaños de los campos chunkID, chunkSize que los tienen que tener todos los chunks.
 defaultS = [4,4]
+
+wave_format_extended :: Int32
+wave_format_extended = -2

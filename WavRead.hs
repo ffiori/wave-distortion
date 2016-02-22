@@ -25,19 +25,24 @@ readWav path = do
         let msg = if isDoesNotExistError e then ". El archivo no existe."
                   else if isAlreadyInUseError e then ". El archivo está siendo usado."
                   else "."
-        in error $ "No se pudo abrir el archivo "++(show path)++msg++"\nError: "++(show e)
+        in do putStrLn ("No se pudo abrir el archivo "++(show path)++msg++"\nError: "++(show e))
+              E.throw e
 
 
 -- Headers --
 
 parseHeader :: Handle -> IO WavFile
-parseHeader h = do rh <- parsehRIFF h
-                   fh <- parsehFMT h
-                   dh <- parsehDATA h rh fh
-                   return W { riffheader = rh
-                            , fmtheader = fh
-                            , dataheader = dh
-                            }
+parseHeader h = do
+   rh <- parsehRIFF h `catchIOError` catcher "RIFF"
+   fh <- parsehFMT h `catchIOError` catcher "format"
+   dh <- parsehDATA h rh fh `catchIOError` catcher "data"
+   return W { riffheader = rh
+            , fmtheader = fh
+            , dataheader = dh
+            }
+  where
+    catcher :: String -> IOError -> IO a
+    catcher s e = putStrLn ("Error en header "++s++".") >> E.throw e
 
 parsehRIFF :: Handle -> IO HRIFF
 parsehRIFF h = do fields <- recursiveGet h riffS
@@ -59,7 +64,11 @@ parsehFMT h = do
     else do 
       fields <- recursiveGet h fmtS
       let format = getInt (fields!!0)
-      fieldsExt <- if format == -2 then recursiveGet h fmtExtS else return [] -- format==-2 indica que se trabaja con formato extendido.
+      fieldsExt <- if format == wave_format_extended
+                     then recursiveGet h fmtExtS
+                     else if fromIntegral sz == sum fmtS + (head fmtExtS) -- algunos formatos llevan este campo en 0 aunque no sea el extendido.
+                            then recursiveGet h [head fmtExtS]
+                            else return []
       return HF { subchunk1ID   = id
                 , subchunk1Size = sz
                 , audioFormat   = format
@@ -68,11 +77,13 @@ parsehFMT h = do
                 , byteRate      = getInt (fields!!3)
                 , blockAlign    = getInt (fields!!4)
                 , bitsPerSample = getInt (fields!!5)
-                , cbSize = if format == -2 then Just (getInt (fieldsExt!!0)) else Nothing
-                , validBitsPerSample = if format == -2 then Just (getInt (fieldsExt!!1)) else Nothing
-                , chMask = if format == -2 then Just (getInt (fieldsExt!!2)) else Nothing
-                , subFormat = if format == -2 then Just (getInt (fieldsExt!!3)) else Nothing
-                , check = if format == -2 then Just (getString (fieldsExt!!4)) else Nothing
+                , cbSize = if not (null fieldsExt)
+                             then Just $ getInt $ head fieldsExt
+                             else Nothing
+                , validBitsPerSample = if format == wave_format_extended then Just (getInt (fieldsExt!!1)) else Nothing
+                , chMask = if format == wave_format_extended then Just (getInt (fieldsExt!!2)) else Nothing
+                , subFormat = if format == wave_format_extended then Just (getInt (fieldsExt!!3)) else Nothing
+                , check = if format == wave_format_extended then Just (getString (fieldsExt!!4)) else Nothing
                 }
 
 parsehDATA :: Handle -> HRIFF -> Hfmt -> IO Hdata
@@ -82,8 +93,8 @@ parsehDATA h rh fh =
                    Just x -> x
                    Nothing -> 1
   in
-    if format > 1 || (format == -2 && format2 > 1)
-      then error $ "Archivo comprimido o de punto flotante no soportado por el programa. Formato de compresión "++(show $ audioFormat fh)
+    if format > 1 || (format == wave_format_extended && format2 > 1)
+      then error $ "Archivo comprimido o de punto flotante no soportado por el programa. Formato de compresión "++(show format)++ if format /= wave_format_extended then "." else ". Subformato "++(show format2)++"."
       else
         if bitsPerSample fh > 32 || mod (bitsPerSample fh) 8 /= 0
           then error $ "Profundidad de muestras no soportada por el programa. Sólo se admiten muestras de 8, 16, 24 y 32 bits. BitsPerSample "++(show $ bitsPerSample fh)
@@ -93,8 +104,8 @@ parsehDATA h rh fh =
                 sz = getInt (fields!!1)
             if id /= "data"
               then do
+                putStrLn $ "    chunk descartado de ID:"++id++"." -- ++(show $ BS.length $ fields!!0)++" "++(show $ fromIntegral $ (BS.unpack $ fields!!1)!!1)
                 hSeek h RelativeSeek (fromIntegral sz)
-                putStrLn $ "    chunk descartado de ID:"++id++"."
                 parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
               else do
                 chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)

@@ -140,7 +140,11 @@ updateWavFile wf newChFiles = do
       oldrh = riffheader wf
       oldfh = fmtheader wf
       olddh = dataheader wf
-      finalHeaderSize = if audioFormat oldfh == -2 then headerExtSz else headerSz --ver WavTypes.hs
+      finalHeaderSize = if audioFormat oldfh == wave_format_extended --ver WavTypes.hs
+                          then headerExtSz
+                          else case cbSize oldfh of
+                                 Nothing -> headerSz
+                                 Just _ -> headerSz + (head fmtExtS)
       newrh = HR { chunkID   = chunkID oldrh
                  , chunkSize = (fromIntegral newsz) + (fromIntegral $ - (riffS!!0) - (riffS!!1) + finalHeaderSize)
                  , format    = format oldrh
