@@ -8,19 +8,19 @@ import Distort
 import Control.Monad.State ((>=>))
 
 data Efecto = SetVolMax
-             | SetVolRel Double
-             | NoiseGate Double
-             | ClipRel Double
-             | ClipAbs Sample
-             | SoftClipRel Double Double
-             | SoftClipAbs Sample Double
-             | CompRel Double Double
-             | CompAvg Double
-             | CompAbs Sample Double
-             | Tremolo Double Double Double
-             | Panning Double Double Double
-             | Delay Double Int Double
-             | Echo Double Int Double
+            | SetVolRel Double
+            | NoiseGate Double
+            | ClipRel Double
+            | ClipAbs Sample
+            | SoftClipRel Double Double
+            | SoftClipAbs Sample Double
+            | CompRel Double Double
+            | CompAvg Double
+            | CompAbs Sample Double
+            | Tremolo Double Double Double
+            | Panning Double Double Double
+            | Delay Double Int Double
+            | Echo Double Int Double
 
 
 -- Convierte un elemento de la representación en deep embedding a la función correspondiente.

@@ -16,7 +16,7 @@ data WavFile = W { riffheader :: HRIFF
 type Sample = Int32
 
 
--- Headers --
+-- Headers ---------------------------------------------------------------------
 
 -- Aunque no todos los campos sean de 32 bits los represento a todos los que
 -- sean valores numéricos con Int32 para simplicidad de código.
@@ -47,7 +47,7 @@ data Hdata = HD { chunk2ID :: String    --big endian
                 }
 
 
--- Constantes --
+-- Constantes ------------------------------------------------------------------
 
 headerSz :: Int
 headerSz = riffSz + fmtSz + hdataSz

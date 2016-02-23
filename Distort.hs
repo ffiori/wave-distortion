@@ -33,7 +33,7 @@ import System.IO.Error
 import Control.Monad.Trans.Resource -- necesario para usar bracketP y poder manejar excepciones dentro de conduit.
 type RIO = ResourceT IO
 
---Misc--------------------------------------------------------------------------
+-- Utilidades ------------------------------------------------------------------
 --ejecuta action y si es que falla borra los temporales de wf y los que hay en newChs
 safelyDo :: RIO WavFile -> WavFile -> [(FilePath,Handle)] -> IO WavFile
 safelyDo action wf newChs = runResourceT action `E.catch` catcher
@@ -169,7 +169,9 @@ mapSamples f = do
     Just samples -> do 
       yield $ map f samples
       mapSamples f
---------------------------------------------------------------------------------
+
+
+-- Efectos ---------------------------------------------------------------------
 
 {-
 Los efectos que usan valores absolutos no necesitan ni siquiera usar un sink aparte antes,

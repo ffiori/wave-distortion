@@ -29,7 +29,7 @@ readWav path = do
               E.throw e
 
 
--- Headers --
+-- Headers ---------------------------------------------------------------------
 
 parseHeader :: Handle -> IO WavFile
 parseHeader h = do
@@ -66,8 +66,8 @@ parsehFMT h = do
       let format = getInt (fields!!0)
       fieldsExt <- if format == wave_format_extended
                      then recursiveGet h fmtExtS
-                     else if fromIntegral sz == sum fmtS + (head fmtExtS) -- algunos formatos llevan este campo en 0 aunque no sea el extendido.
-                            then recursiveGet h [head fmtExtS]
+                     else if fromIntegral sz > sum fmtS -- algunos formatos llevan este campo en 0 aunque no sea el extendido.
+                            then recursiveGetn h fmtExtS (fromIntegral sz - (sum fmtS))
                             else return []
       return HF { subchunk1ID   = id
                 , subchunk1Size = sz
@@ -77,14 +77,40 @@ parsehFMT h = do
                 , byteRate      = getInt (fields!!3)
                 , blockAlign    = getInt (fields!!4)
                 , bitsPerSample = getInt (fields!!5)
-                , cbSize = if not (null fieldsExt)
-                             then Just $ getInt $ head fieldsExt
-                             else Nothing
-                , validBitsPerSample = if format == wave_format_extended then Just (getInt (fieldsExt!!1)) else Nothing
-                , chMask = if format == wave_format_extended then Just (getInt (fieldsExt!!2)) else Nothing
-                , subFormat = if format == wave_format_extended then Just (getInt (fieldsExt!!3)) else Nothing
-                , check = if format == wave_format_extended then Just (getString (fieldsExt!!4)) else Nothing
+                , cbSize =
+                    if length fieldsExt > 0
+                      then Just $ getInt $ fieldsExt!!0
+                      else Nothing
+                , validBitsPerSample =
+                    if length fieldsExt > 1
+                      then Just $ getInt $ fieldsExt!!1
+                      else Nothing
+                , chMask = 
+                    if length fieldsExt > 2
+                      then Just $ getInt $ fieldsExt!!2
+                      else Nothing
+                , subFormat = 
+                    if length fieldsExt > 3
+                      then Just $ getInt $ fieldsExt!!3
+                      else Nothing
+                , check =
+                    if length fieldsExt > 4
+                      then Just $ getString $ fieldsExt!!4
+                      else Nothing
                 }
+  where
+    recursiveGetn :: Handle -> [Int] -> Int -> IO [BS.ByteString]
+    recursiveGetn _ _ 0 = return []
+    recursiveGetn _ [] n = error $ "Faltan "++(show n)++" bytes en el header format."
+    recursiveGetn h szs n =
+      let next = head szs
+      in if n < next
+           then error $ "Faltan "++(show $ next-n)++" bytes en el header format."
+           else do b <- BS.hGet h next
+                   bs <- recursiveGetn h (tail szs) (n-next)
+                   return $ b:bs
+      
+    
 
 parsehDATA :: Handle -> HRIFF -> Hfmt -> IO Hdata
 parsehDATA h rh fh = 
@@ -104,8 +130,8 @@ parsehDATA h rh fh =
                 sz = getInt (fields!!1)
             if id /= "data"
               then do
-                putStrLn $ "    chunk descartado de ID:"++id++"." -- ++(show $ BS.length $ fields!!0)++" "++(show $ fromIntegral $ (BS.unpack $ fields!!1)!!1)
                 hSeek h RelativeSeek (fromIntegral sz)
+                putStrLn $ "    chunk descartado de ID:"++id++"."
                 parsehDATA h rh fh --descarto todos los chunks opcionales del formato WAVE.
               else do
                 chFilePaths <- parseData sz fh h  --escribe los canales en archivos temporales separados (uno por canal)
@@ -115,7 +141,7 @@ parsehDATA h rh fh =
                           }
 
 
--- Data --
+-- Data ------------------------------------------------------------------------
 
 parseData :: Int32 -> Hfmt -> Handle -> IO [FilePath]
 parseData sz fh h =

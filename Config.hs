@@ -13,7 +13,7 @@ config = [
            --SetVolMax,
            --SoftClipRel 1 10,
           --, CompAvg 70
-          --Tremolo 500 1 0.5
+          Tremolo 500 1 0.5,
           --Panning 200 1 0.5,
           --Echo 100 10 20,
           --Echo 500 2 80,
