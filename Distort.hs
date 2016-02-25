@@ -278,7 +278,8 @@ compAbs v s wf =
   let lim = abs v
       factor = s/100
       f :: Sample -> Sample
-      f s = signum s * ( abs s + round (fromIntegral (lim - abs s) * factor) )
+      f 0 = 0
+      f s = signum s * ( abs s + round (fromIntegral (lim - abs s) * factor) ) -- si s>0 => s + (lim-s)*fact
   in do newChs <- makeTemps wf
         safelyDo (getSamples wf $$ mapSamples f =$ putSamples wf newChs) wf newChs
 
